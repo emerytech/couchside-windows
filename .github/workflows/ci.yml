@@ -1,0 +1,23 @@
+name: CI
+
+# Syntax gate for the Windows agent. py_compile is import-free, so it validates
+# couchsided-win.py + qr.py on ubuntu without any Windows-only dependency
+# (ctypes/ViGEmClient.dll are loaded at runtime, not import time). A real
+# windows-latest build/import + a PyInstaller smoke are a future add.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: py_compile the Windows agent
+        run: |
+          python3 -m py_compile couchsided-win.py qr.py
+          echo "py_compile OK"
