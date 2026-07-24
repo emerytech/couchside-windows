@@ -1,0 +1,59 @@
+name: Sync agent from monorepo
+
+# One-way mirror: pull the Windows agent files from the public Couchside
+# product monorepo (emerytech/couchside, the source of truth) into this repo, so
+# the open-source Windows agent stays current without hand-copying. The monorepo
+# is public, so this needs no cross-repo token — it fetches raw files and commits
+# to THIS repo with the built-in GITHUB_TOKEN. Runs daily; also on manual
+# dispatch and on a repository_dispatch(agent-changed) the monorepo can fire for
+# an instant sync (optional, needs a PAT on the monorepo side).
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+  repository_dispatch:
+    types: [agent-changed]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Pull the Windows agent files from emerytech/couchside@main
+        run: |
+          set -euo pipefail
+          BASE="https://raw.githubusercontent.com/emerytech/couchside/main"
+          # (dest in this repo) <- (path in the monorepo)
+          curl -fsSL "$BASE/agent/win/couchsided-win.py"  -o couchsided-win.py
+          curl -fsSL "$BASE/agent/win/couchside-tray.pyw" -o couchside-tray.pyw
+          curl -fsSL "$BASE/agent/win/build.ps1"          -o build.ps1
+          curl -fsSL "$BASE/agent/qr.py"                  -o qr.py
+          curl -fsSL "$BASE/install.ps1"                  -o install.ps1
+
+      - name: Syntax gate (never publish a broken sync)
+        run: python3 -m py_compile couchsided-win.py qr.py
+
+      - name: Commit + push if anything changed
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "no changes — already in sync"
+            exit 0
+          fi
+          git config user.name "couchside-sync[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "sync: pull Windows agent from emerytech/couchside@main"
+          git push
