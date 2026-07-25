@@ -59,7 +59,8 @@ Source: "..\install.ps1";              DestDir: "{app}"; Flags: ignoreversion
 
 [UninstallRun]
 ; Mirror uninstall through the same tested path (removes the task, firewall
-; rule, tray, and — after asking — the pairing token).
+; rule, agent dir and tray; the pairing token under ProgramData is left in place
+; on purpose, so a reinstall does not unpair every phone).
 ;
 ; This one stays a passive [UninstallRun] on purpose: [UninstallRun] ignores exit
 ; codes, and for UNINSTALL that leniency is what we want. A helper that fails
@@ -100,9 +101,10 @@ Filename: "powershell.exe"; \
 //     and exits 0 anyway.
 //
 // Returning a non-empty string from PrepareToInstall is the documented way to
-// stop Setup: it shows that string and aborts with a non-zero exit code, having
-// installed nothing. It runs before the app dir is populated, which is why the
-// payload is staged into the temp dir — see [Files].
+// stop Setup: it shows that string and aborts with exit code 7 ("Prepare To
+// Install determined Setup cannot proceed"), having installed nothing —
+// measured, same box, same day. It runs before the app dir is populated, which
+// is why the payload is staged into the temp dir — see [Files].
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
