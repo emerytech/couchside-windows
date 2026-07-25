@@ -1,0 +1,63 @@
+name: Build installer
+
+# Build the double-click CouchsideSetup.exe on windows-latest:
+#   PyInstaller (build.ps1) -> couchside-agent.exe  ->  Inno Setup -> CouchsideSetup.exe
+# This is the artifact SignPath will sign (a later step) and that couchside.tv
+# will hand mainstream Windows users instead of `irm ... | iex`.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - couchsided-win.py
+      - qr.py
+      - build.ps1
+      - install.ps1
+      - installer/**
+      - .github/workflows/build-installer.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build couchside-agent.exe (PyInstaller)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
+
+      - name: Derive agent version from couchsided-win.py
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path couchsided-win.py -Pattern 'VERSION\s*=\s*["'']([^"'']+)["'']' | Select-Object -First 1
+          $v = if ($m) { $m.Matches[0].Groups[1].Value } else { "0.0.0" }
+          Write-Host "agent version: $v"
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Compile CouchsideSetup.exe
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            /DMyAppVersion=${{ steps.ver.outputs.version }} `
+            installer\couchside.iss
+
+      - name: Sanity — the installer exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist\CouchsideSetup.exe)) { throw "CouchsideSetup.exe was not produced" }
+          Get-Item dist\CouchsideSetup.exe | Format-List Name, Length
+
+      - name: Upload CouchsideSetup.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: CouchsideSetup
+          path: dist/CouchsideSetup.exe
+          if-no-files-found: error
