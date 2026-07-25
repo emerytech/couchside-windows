@@ -109,10 +109,12 @@ begin
     Exit;   { 0 = the real install succeeded; say nothing, finish normally }
 
   { The real work runs hidden, so the actual error text is not on screen
-    anywhere. Point at the two places it can still be recovered from. }
+    anywhere. Point at the two places it can still be recovered from.
+    (Keep #13#10 off the start of a line — ISPP reads a leading # as a
+    preprocessor directive and the compile fails with "Unknown preprocessor
+    directive.") }
   Msg := Msg + #13#10#13#10 +
-    'To see the actual error, open PowerShell and run the installer visibly:' +
-    #13#10#13#10 +
+    'To see the actual error, open PowerShell and run it visibly:' + #13#10#13#10 +
     '    irm https://couchside.tv/install.ps1 | iex' + #13#10#13#10 +
     'Setup''s own log is in your %TEMP% folder (Setup Log*.txt).';
 
