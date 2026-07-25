@@ -34,22 +34,28 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName=Couchside (agent)
-UninstallDisplayIcon={app}\couchside-agent.exe
+; The agent exe lives where install.ps1 puts it, not in the bootstrap dir.
+UninstallDisplayIcon={localappdata}\Couchside\agent\couchside-agent.exe
 ; Always leave a log in %TEMP% (Setup Log*.txt). The real install work happens in
 ; a hidden PowerShell child, so when it fails the log is the only breadcrumb —
 ; the failure message below points users at it.
 SetupLogging=yes
 
 [Files]
-; Staged together so install.ps1's Find-Local sees couchside-agent.exe beside it.
-Source: "..\dist\couchside-agent.exe"; DestDir: "{app}"; Flags: ignoreversion
+; The real install runs from PrepareToInstall (see [Code]) — the only hook that
+; can actually abort Setup — which is BEFORE {app} is populated. So stage the
+; agent payload into {tmp} with dontcopy + ExtractTemporaryFile instead: they
+; land side by side there and install.ps1's Find-Local sees couchside-agent.exe
+; next to itself, exactly as it did in {app}.
+; Keep these dontcopy entries FIRST and extract them in this order —
+; SolidCompression makes out-of-order extraction expensive.
+Source: "..\dist\couchside-agent.exe"; Flags: dontcopy
+Source: "..\couchside-tray.pyw";       Flags: dontcopy
+Source: "..\qr.py";                    Flags: dontcopy
+Source: "..\install.ps1";              Flags: dontcopy
+; A second, persistent copy of install.ps1: [UninstallRun] needs it long after
+; {tmp} is gone. 33 KB — the 11 MB agent exe is deliberately NOT duplicated.
 Source: "..\install.ps1";              DestDir: "{app}"; Flags: ignoreversion
-Source: "..\couchside-tray.pyw";       DestDir: "{app}"; Flags: ignoreversion
-; KEEP THIS ENTRY LAST. Its AfterInstall hands off to the real installer, which
-; needs every file above already staged in {app}. AfterInstall runs INSIDE the
-; install step, which is the whole point — see [Code].
-Source: "..\qr.py";                    DestDir: "{app}"; Flags: ignoreversion; \
-  AfterInstall: RunAgentInstaller
 
 [UninstallRun]
 ; Mirror uninstall through the same tested path (removes the task, firewall
@@ -72,41 +78,58 @@ Filename: "powershell.exe"; \
   completed successfully", and `runhidden` meant the error text was invisible.
   A user upgraded, saw a green wizard, and kept running the old agent.
 
-  Exec() hands back ResultCode, so a non-zero code can raise. The specific bug
-  behind that incident was fixed in install.ps1 (it now stops the running agent
-  before copying over it), but any FUTURE failure in there — winget, signature/
-  checksum mismatch, py_compile — would have been swallowed the same way.
+  Exec() hands back ResultCode, so a non-zero code can be acted on.  The specific
+  bug behind that incident was fixed in install.ps1 (it now stops the running
+  agent before copying over it), but any FUTURE failure in there — winget,
+  signature/checksum mismatch, py_compile — would have been swallowed the same
+  way.
 
-  WHY AN AfterInstall HOOK AND NOT CurStepChanged(ssPostInstall): ssPostInstall
-  runs after Inno has already logged "Installation process succeeded", so an
-  exception there is reported and then IGNORED — measured on Windows 2026-07-25,
-  the log showed "CurStepChanged raised an exception" and Setup still exited 0.
-  An AfterInstall function runs inside the install step, where an exception
-  aborts Setup for real: rollback, a failure dialog, and a non-zero exit code. }
+  WHY PrepareToInstall AND NOT AN EXCEPTION FROM CurStepChanged / AfterInstall:
+  neither of those can fail an install. Both were measured on Windows
+  2026-07-25 against this very installer:
 
-procedure RunAgentInstaller;
+    * CurStepChanged(ssPostInstall) + RaiseException -> log says "CurStepChanged
+      raised an exception", the message box is shown, and Setup carries on and
+      exits 0. It runs after "Installation process succeeded" is already logged.
+    * AfterInstall on the last [Files] entry + RaiseException -> the exception is
+      caught by the expression evaluator ("Internal error: Expression error
+      'Runtime error ...'"), then Setup logs "Installation process succeeded"
+      and exits 0 anyway.
+
+  Returning a non-empty string from PrepareToInstall is the documented way to
+  stop Setup: it shows that string and aborts with a non-zero exit code, having
+  installed nothing. It runs before {app} is populated, which is why the payload
+  is staged into {tmp} — see [Files]. }
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
-  Msg: String;
 begin
-  WizardForm.StatusLabel.Caption :=
+  Result := '';
+  WizardForm.PreparingLabel.Caption :=
     'Installing the Couchside agent (ViGEmBus, service, firewall)...';
 
-  { Same command line the [Run] entry used, including -FromInstaller: it makes
-    install.ps1's UAC self-elevation WAIT on the elevated child and mirror that
-    child's exit code outward (and skip -NoExit, so no stray PowerShell window
-    outlives the wizard). Without it we would be reading the exit code of the
-    async RunAs handoff, which returns 0 instantly no matter what happens. }
+  { Same order as the [Files] dontcopy entries — solid compression. }
+  ExtractTemporaryFile('couchside-agent.exe');
+  ExtractTemporaryFile('couchside-tray.pyw');
+  ExtractTemporaryFile('qr.py');
+  ExtractTemporaryFile('install.ps1');
+
+  { Same command line the old [Run] entry used, including -FromInstaller: it
+    makes install.ps1's UAC self-elevation WAIT on the elevated child and mirror
+    that child's exit code outward (and skip -NoExit, so no stray PowerShell
+    window outlives the wizard). Without it we would be reading the exit code of
+    the async RunAs handoff, which returns 0 instantly no matter what happens. }
   if not Exec('powershell.exe',
        '-NoProfile -ExecutionPolicy Bypass -File "' +
-         ExpandConstant('{app}\install.ps1') + '" -FromInstaller',
-       ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Msg := 'Setup could not start the Couchside installer script.' + #13#10 +
-           'Windows said: ' + SysErrorMessage(ResultCode)
+         ExpandConstant('{tmp}\install.ps1') + '" -FromInstaller',
+       ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := 'Setup could not start the Couchside installer script.' + #13#10 +
+              'Windows said: ' + SysErrorMessage(ResultCode)
   else if ResultCode <> 0 then
-    Msg := 'The Couchside agent installer failed (exit code ' +
-           IntToStr(ResultCode) + ').' + #13#10 +
-           'The agent on this PC was NOT installed or updated.'
+    Result := 'The Couchside agent installer failed (exit code ' +
+              IntToStr(ResultCode) + ').' + #13#10 +
+              'The agent on this PC was NOT installed or updated.'
   else
     Exit;   { 0 = the real install succeeded; say nothing, finish normally }
 
@@ -115,12 +138,8 @@ begin
     (Keep #13#10 off the start of a line — ISPP reads a leading # as a
     preprocessor directive and the compile fails with "Unknown preprocessor
     directive.") }
-  Msg := Msg + #13#10#13#10 +
+  Result := Result + #13#10#13#10 +
     'To see the actual error, open PowerShell and run it visibly:' + #13#10#13#10 +
     '    irm https://couchside.tv/install.ps1 | iex' + #13#10#13#10 +
     'Setup''s own log is in your %TEMP% folder (Setup Log*.txt).';
-
-  { Aborts the wizard: no "Setup completed successfully" page, and Setup exits
-    with a non-zero code. }
-  RaiseException(Msg);
 end;
