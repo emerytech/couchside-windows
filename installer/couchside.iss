@@ -44,10 +44,12 @@ Source: "..\couchside-tray.pyw";       DestDir: "{app}"; Flags: ignoreversion
 Source: "..\qr.py";                    DestDir: "{app}"; Flags: ignoreversion
 
 [Run]
-; Hand off to the real installer. -NoOpen keeps the wizard in control of the
-; "open the pairing page" moment (the [Run] postinstall below does it once).
+; Hand off to the real installer. -FromInstaller makes install.ps1's UAC self-
+; elevation WAIT for the elevated child and skip -NoExit, so waituntilterminated
+; below tracks the real install (not the instant async RunAs handoff) and no stray
+; PowerShell window is left open after the wizard finishes.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install.ps1"""; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install.ps1"" -FromInstaller"; \
   StatusMsg: "Installing the Couchside agent (ViGEmBus, service, firewall)..."; \
   Flags: runhidden waituntilterminated
 
@@ -55,5 +57,5 @@ Filename: "powershell.exe"; \
 ; Mirror uninstall through the same tested path (removes the task, firewall
 ; rule, tray, and — after asking — the pairing token).
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install.ps1"" -Uninstall"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install.ps1"" -Uninstall -FromInstaller"; \
   Flags: runhidden waituntilterminated; RunOnceId: "CouchsideAgentUninstall"
