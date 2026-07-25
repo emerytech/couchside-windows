@@ -70,36 +70,39 @@ Filename: "powershell.exe"; \
   Flags: runhidden waituntilterminated; RunOnceId: "CouchsideAgentUninstall"
 
 [Code]
-{ Hand off to the real installer, and REPORT ITS EXIT CODE.
-
-  This was a [Run] entry until 2026-07-25. Inno's [Run] section never inspects
-  exit codes: when install.ps1 failed (exit 1 — confirmed on real hardware, the
-  Inno log read "Process exit code: 1") the wizard still displayed "Setup
-  completed successfully", and `runhidden` meant the error text was invisible.
-  A user upgraded, saw a green wizard, and kept running the old agent.
-
-  Exec() hands back ResultCode, so a non-zero code can be acted on.  The specific
-  bug behind that incident was fixed in install.ps1 (it now stops the running
-  agent before copying over it), but any FUTURE failure in there — winget,
-  signature/checksum mismatch, py_compile — would have been swallowed the same
-  way.
-
-  WHY PrepareToInstall AND NOT AN EXCEPTION FROM CurStepChanged / AfterInstall:
-  neither of those can fail an install. Both were measured on Windows
-  2026-07-25 against this very installer:
-
-    * CurStepChanged(ssPostInstall) + RaiseException -> log says "CurStepChanged
-      raised an exception", the message box is shown, and Setup carries on and
-      exits 0. It runs after "Installation process succeeded" is already logged.
-    * AfterInstall on the last [Files] entry + RaiseException -> the exception is
-      caught by the expression evaluator ("Internal error: Expression error
-      'Runtime error ...'"), then Setup logs "Installation process succeeded"
-      and exits 0 anyway.
-
-  Returning a non-empty string from PrepareToInstall is the documented way to
-  stop Setup: it shows that string and aborts with a non-zero exit code, having
-  installed nothing. It runs before {app} is populated, which is why the payload
-  is staged into {tmp} — see [Files]. }
+// Hand off to the real installer, and REPORT ITS EXIT CODE.
+//
+// (Comments here are // on purpose: a Pascal { } comment ends at the first }, so
+// one containing {app} or {tmp} breaks the compile with "'BEGIN' expected".)
+//
+// This was a [Run] entry until 2026-07-25. Inno's [Run] section never inspects
+// exit codes: when install.ps1 failed (exit 1 — confirmed on real hardware, the
+// Inno log read "Process exit code: 1") the wizard still displayed "Setup
+// completed successfully", and `runhidden` meant the error text was invisible.
+// A user upgraded, saw a green wizard, and kept running the old agent.
+//
+// Exec() hands back ResultCode, so a non-zero code can be acted on. The specific
+// bug behind that incident was fixed in install.ps1 (it now stops the running
+// agent before copying over it), but any FUTURE failure in there — winget,
+// signature/checksum mismatch, py_compile — would have been swallowed the same
+// way.
+//
+// WHY PrepareToInstall AND NOT AN EXCEPTION FROM CurStepChanged / AfterInstall:
+// neither of those can fail an install. Both were measured on Windows
+// 2026-07-25 against this very installer:
+//
+//   * CurStepChanged(ssPostInstall) + RaiseException -> log says "CurStepChanged
+//     raised an exception", the message box is shown, and Setup carries on and
+//     exits 0. It runs after "Installation process succeeded" is already logged.
+//   * AfterInstall on the last [Files] entry + RaiseException -> the exception is
+//     caught by the expression evaluator ("Internal error: Expression error
+//     'Runtime error ...'"), then Setup logs "Installation process succeeded"
+//     and exits 0 anyway.
+//
+// Returning a non-empty string from PrepareToInstall is the documented way to
+// stop Setup: it shows that string and aborts with a non-zero exit code, having
+// installed nothing. It runs before the app dir is populated, which is why the
+// payload is staged into the temp dir — see [Files].
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
