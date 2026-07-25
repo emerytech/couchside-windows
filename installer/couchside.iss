@@ -45,7 +45,11 @@ SetupLogging=yes
 Source: "..\dist\couchside-agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\install.ps1";              DestDir: "{app}"; Flags: ignoreversion
 Source: "..\couchside-tray.pyw";       DestDir: "{app}"; Flags: ignoreversion
-Source: "..\qr.py";                    DestDir: "{app}"; Flags: ignoreversion
+; KEEP THIS ENTRY LAST. Its AfterInstall hands off to the real installer, which
+; needs every file above already staged in {app}. AfterInstall runs INSIDE the
+; install step, which is the whole point — see [Code].
+Source: "..\qr.py";                    DestDir: "{app}"; Flags: ignoreversion; \
+  AfterInstall: RunAgentInstaller
 
 [UninstallRun]
 ; Mirror uninstall through the same tested path (removes the task, firewall
@@ -68,37 +72,35 @@ Filename: "powershell.exe"; \
   completed successfully", and `runhidden` meant the error text was invisible.
   A user upgraded, saw a green wizard, and kept running the old agent.
 
-  Exec() hands back ResultCode, so a non-zero code raises and Setup reports a
-  failed install instead of a silent one. The specific bug behind that incident
-  was fixed in install.ps1 (it now stops the running agent before copying over
-  it), but any FUTURE failure in there — winget, signature/checksum mismatch,
-  py_compile — would have been swallowed exactly the same way. }
+  Exec() hands back ResultCode, so a non-zero code can raise. The specific bug
+  behind that incident was fixed in install.ps1 (it now stops the running agent
+  before copying over it), but any FUTURE failure in there — winget, signature/
+  checksum mismatch, py_compile — would have been swallowed the same way.
 
-function RunAgentInstaller(var ResultCode: Integer): Boolean;
+  WHY AN AfterInstall HOOK AND NOT CurStepChanged(ssPostInstall): ssPostInstall
+  runs after Inno has already logged "Installation process succeeded", so an
+  exception there is reported and then IGNORED — measured on Windows 2026-07-25,
+  the log showed "CurStepChanged raised an exception" and Setup still exited 0.
+  An AfterInstall function runs inside the install step, where an exception
+  aborts Setup for real: rollback, a failure dialog, and a non-zero exit code. }
+
+procedure RunAgentInstaller;
+var
+  ResultCode: Integer;
+  Msg: String;
 begin
+  WizardForm.StatusLabel.Caption :=
+    'Installing the Couchside agent (ViGEmBus, service, firewall)...';
+
   { Same command line the [Run] entry used, including -FromInstaller: it makes
     install.ps1's UAC self-elevation WAIT on the elevated child and mirror that
     child's exit code outward (and skip -NoExit, so no stray PowerShell window
     outlives the wizard). Without it we would be reading the exit code of the
     async RunAs handoff, which returns 0 instantly no matter what happens. }
-  Result := Exec('powershell.exe',
-    '-NoProfile -ExecutionPolicy Bypass -File "' +
-      ExpandConstant('{app}\install.ps1') + '" -FromInstaller',
-    ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
-procedure CurStepChanged(CurStep: TSetupStep);
-var
-  ResultCode: Integer;
-  Msg: String;
-begin
-  if CurStep <> ssPostInstall then
-    Exit;
-
-  WizardForm.StatusLabel.Caption :=
-    'Installing the Couchside agent (ViGEmBus, service, firewall)...';
-
-  if not RunAgentInstaller(ResultCode) then
+  if not Exec('powershell.exe',
+       '-NoProfile -ExecutionPolicy Bypass -File "' +
+         ExpandConstant('{app}\install.ps1') + '" -FromInstaller',
+       ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     Msg := 'Setup could not start the Couchside installer script.' + #13#10 +
            'Windows said: ' + SysErrorMessage(ResultCode)
   else if ResultCode <> 0 then
