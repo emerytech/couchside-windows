@@ -1,0 +1,47 @@
+name: Release installer
+
+# On a v* tag: build CouchsideSetup.exe on windows-latest and attach it to the
+# GitHub release. Unsigned for now (the audience is technical; SmartScreen shows
+# a one-time "Run anyway"). If SignPath/Azure signing is added later, the signing
+# step slots in between the ISCC compile and the release upload.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build couchside-agent.exe (PyInstaller)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
+
+      - name: Derive agent version
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path couchsided-win.py -Pattern 'VERSION\s*=\s*["'']([^"'']+)["'']' | Select-Object -First 1
+          "version=$($m.Matches[0].Groups[1].Value)" >> $env:GITHUB_OUTPUT
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Compile CouchsideSetup.exe
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            /DMyAppVersion=${{ steps.ver.outputs.version }} `
+            installer\couchside.iss
+
+      - name: Attach installer to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/CouchsideSetup.exe
+          fail_on_unmatched_files: true
