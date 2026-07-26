@@ -85,11 +85,93 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.1-win"
+VERSION = "0.4.3-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
 DEFAULT_TOKEN_PATH = os.path.join(_PROGRAMDATA, "Couchside", "token")
+
+# --- agent log file ----------------------------------------------------------
+# The agent is launched by a scheduled task running pythonw.exe, which is
+# GUI-subsystem and has NO console: every print() in this file goes to a handle
+# that discards it. /api/journal only reads the Windows Event Log for watched
+# SERVICES, and the agent is not a service -- so the agent's own diagnostics
+# were unrecoverable on Windows. That is not a cosmetic gap: the one line that
+# explains a stuck input session ("[gamepad] ... input blocked") could not be
+# read back from a user's machine at all.
+#
+# So tee stdout/stderr into a rotating file the app can fetch. Size-capped and
+# rotated once, because this runs forever on someone else's PC and must not
+# grow without bound.
+AGENT_LOG_PATH = os.path.join(
+    os.environ.get("LOCALAPPDATA") or os.path.join(_PROGRAMDATA, "Couchside"),
+    "Couchside", "logs", "agent.log")
+AGENT_LOG_MAX_BYTES = 1 << 20      # 1 MiB, then rotate to .1 (2 MiB on disk max)
+
+
+class _Tee:
+    """Write-through to the original stream AND the log file.
+
+    Keeps the original stream so a console run (python.exe, or --mock in a
+    terminal) still prints normally. Never raises: a logging failure must not
+    take down an input path, so every write is best-effort."""
+
+    def __init__(self, stream, path):
+        self._s = stream
+        self._path = path
+        self._lock = threading.Lock()
+
+    def write(self, text):
+        try:
+            if self._s is not None:
+                self._s.write(text)
+        except Exception:
+            pass
+        try:
+            with self._lock:
+                self._rotate_if_needed()
+                with open(self._path, "a", encoding="utf-8", errors="replace") as f:
+                    f.write(text)
+        except Exception:
+            pass
+        return len(text)
+
+    def flush(self):
+        try:
+            if self._s is not None:
+                self._s.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        try:
+            return bool(self._s and self._s.isatty())
+        except Exception:
+            return False
+
+    def _rotate_if_needed(self):
+        try:
+            if os.path.getsize(self._path) < AGENT_LOG_MAX_BYTES:
+                return
+        except OSError:
+            return
+        try:
+            os.replace(self._path, self._path + ".1")
+        except OSError:
+            pass
+
+
+def start_agent_log():
+    """Tee stdout/stderr to AGENT_LOG_PATH. Best-effort; returns the path or
+    None. Called first thing in main() so even startup failures are captured."""
+    try:
+        os.makedirs(os.path.dirname(AGENT_LOG_PATH), exist_ok=True)
+        sys.stdout = _Tee(sys.stdout, AGENT_LOG_PATH)
+        sys.stderr = _Tee(sys.stderr, AGENT_LOG_PATH)
+        return AGENT_LOG_PATH
+    except Exception:
+        return None
+
 DEFAULT_PORT = 8787
 
 # Flags for spawning children without popping console windows, and for
@@ -139,6 +221,11 @@ DEFAULT_UNITS = [
     # (service name, scope). Audiosrv = Windows Audio: the service an HTPC
     # actually cares about; add Steam/Sunshine etc. via config.json.
     ("Audiosrv", "system"),
+    # The agent's OWN log, served from the tee'd file rather than the Event Log
+    # (the agent is not a service, so it has no Event Log provider). Listed here
+    # so it passes the WATCHLIST_NAMES allowlist in the journal route and shows
+    # up in the app's Logs picker with no app-side change.
+    ("couchside-agent", "user"),
 ]
 
 DEFAULT_ACTIONS = {
@@ -448,6 +535,14 @@ def load_config(path):
         print("warning: invalid config %s (%s), using built-in generic defaults"
               % (path, e), file=sys.stderr, flush=True)
         return
+    # The agent's OWN log is always available, whatever the config says. A
+    # config.json that lists its own units REPLACES the defaults, which would
+    # otherwise make the agent's log un-fetchable on exactly the machines whose
+    # owner customised the watchlist -- and the journal route rejects any unit
+    # not on this allowlist (400), so it has to be a member, not a special case
+    # bypassing the check.
+    if not any(name == AGENT_LOG_UNIT for name, _s in units):
+        units = list(units) + [(AGENT_LOG_UNIT, "user")]
     WATCHLIST = units
     WATCHLIST_NAMES = {name for name, _scope in WATCHLIST}
     ACTIONS = actions
@@ -1079,8 +1174,28 @@ def _xpath_escape(value):
     return value.replace("'", "&apos;")
 
 
+AGENT_LOG_UNIT = "couchside-agent"   # reserved journal unit -> our own log file
+
+
+def _agent_log_lines(lines):
+    """Tail of the agent's own log file (see start_agent_log). Reads the rotated
+    .1 first so a tail that spans a rotation is still contiguous. Never raises;
+    an unreadable log returns a single explanatory line rather than an error, so
+    the Logs panel shows something actionable instead of failing."""
+    out = []
+    for path in (AGENT_LOG_PATH + ".1", AGENT_LOG_PATH):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                out.extend(f.read().splitlines())
+        except OSError:
+            continue
+    if not out:
+        return ["(no agent log yet at %s)" % AGENT_LOG_PATH]
+    return out[-lines:]
+
+
 def real_journal(unit, scope, lines):
-    """Event-log lines for a watched unit.
+    """Event-log lines for a watched unit, or the agent's own log.
 
     Provider-name query against System then Application: services log under
     their own provider name when they log at all. Falls back to Service
@@ -1089,6 +1204,8 @@ def real_journal(unit, scope, lines):
     and matches either, keeping started/stopped/crashed visible for services
     like Audiosrv ("Windows Audio") that never log under their own provider.
     """
+    if unit == AGENT_LOG_UNIT:
+        return _agent_log_lines(lines)
     safe = _xpath_escape(unit)
     for log in ("System", "Application"):
         out = _wevtutil_query(
@@ -4647,6 +4764,112 @@ def _pair_lan_ip():
         return None
 
 
+# ---------------------------------------------------------------------------
+# PIN pairing (POST /api/pair/start, /api/pair/finish) — parity with the Linux
+# agent. These are the only UNAUTHENTICATED POST routes, because a phone that
+# has just discovered this box has no token yet; the box proves consent by
+# showing a PIN on ITS OWN screen, which only someone who can see that screen
+# can read.
+#
+# Before this existed the Windows agent had no PIN flow at all, so the app's
+# "Scan for boxes -> tap the box" path hit the bearer gate and answered
+# 401 unauthorized. Pairing a Windows box was only possible via the QR page or
+# by typing the token by hand (issue #256).
+#
+# The bounds below are what make an unauthenticated endpoint safe and are
+# copied deliberately from the Linux agent — do not relax them:
+#   TTL             a PIN dies on its own
+#   MAX_ATTEMPTS    a wrong PIN burns the session, so it cannot be brute-forced
+#                   (5 tries against 1e6 PINs)
+#   START_DEBOUNCE  a repeat /start cannot spam the screen or reroll the number
+#                   the user is currently reading
+PAIR_PIN_TTL = 120           # seconds a displayed PIN stays valid
+PAIR_PIN_MAX_ATTEMPTS = 5    # wrong PINs before the session is burned
+PAIR_PIN_START_DEBOUNCE = 3  # min seconds between /start (anti on-screen spam)
+PAIR_PIN_LOCK = threading.Lock()
+PAIR_PIN = None              # {pin, expires, attempts, started} or None
+
+
+def pair_pin_start():
+    """Mint a fresh PIN + session (replacing any prior one) and return
+    (pin, ttl, fresh). Debounced: within PAIR_PIN_START_DEBOUNCE of the last
+    start the LIVE pin is returned unchanged, so a double-tap doesn't reroll the
+    number already on screen. `fresh` is True only when a NEW PIN was minted, so
+    the caller pops the box screen only then."""
+    global PAIR_PIN
+    with PAIR_PIN_LOCK:
+        now = time.monotonic()
+        s = PAIR_PIN
+        if s and now <= s["expires"] and now - s["started"] < PAIR_PIN_START_DEBOUNCE:
+            return s["pin"], int(s["expires"] - now), False
+        pin = "%06d" % (int.from_bytes(os.urandom(3), "big") % 1000000)
+        PAIR_PIN = {"pin": pin, "expires": now + PAIR_PIN_TTL,
+                    "attempts": 0, "started": now}
+        return pin, PAIR_PIN_TTL, True
+
+
+def pair_pin_active():
+    """The current PIN if a session is live (for /pair to render), else None."""
+    with PAIR_PIN_LOCK:
+        if PAIR_PIN and time.monotonic() <= PAIR_PIN["expires"]:
+            return PAIR_PIN["pin"]
+        return None
+
+
+def pair_pin_check(pin):
+    """Validate a submitted PIN. True (and burns the session) on match; raises
+    ValueError with a user-facing reason on no-session / expired / locked /
+    wrong. A wrong guess counts toward the attempt cap."""
+    global PAIR_PIN
+    with PAIR_PIN_LOCK:
+        s = PAIR_PIN
+        if not s or time.monotonic() > s["expires"]:
+            PAIR_PIN = None
+            raise ValueError("no active pairing - start it again from the app")
+        if s["attempts"] >= PAIR_PIN_MAX_ATTEMPTS:
+            PAIR_PIN = None
+            raise ValueError("too many wrong PINs - start again")
+        if (pin or "").strip() != s["pin"]:
+            s["attempts"] += 1
+            raise ValueError("wrong PIN")
+        PAIR_PIN = None                       # consume on success
+        return True
+
+
+_BOX_POP_LOCK = threading.Lock()
+_BOX_POP_AT = [0.0]                 # monotonic time of the last box-screen pop
+_BOX_POP_COOLDOWN = 5.0             # hard floor between pops
+
+
+def pair_show_on_box(port):
+    """Open the loopback /pair page on THIS machine's screen so the PIN is
+    visible there. Best-effort and detached: pairing must never fail because a
+    browser would not open. Rate-limited so a retry storm cannot throw windows
+    at the user."""
+    with _BOX_POP_LOCK:
+        now = time.monotonic()
+        if now - _BOX_POP_AT[0] < _BOX_POP_COOLDOWN:
+            return
+        _BOX_POP_AT[0] = now
+    url = "http://localhost:%d/pair" % port
+
+    def go():
+        try:
+            # os.startfile is the Windows "open with the default handler" call;
+            # it returns immediately and does not need a shell.
+            os.startfile(url)          # noqa: S606  (Windows-only, fixed URL)
+        except Exception:
+            try:
+                subprocess.Popen(["cmd", "/c", "start", "", url],
+                                 stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL,
+                                 creationflags=_DETACH_FLAGS)
+            except Exception:
+                pass
+    threading.Thread(target=go, daemon=True).start()
+
+
 def build_pair_url(token, port):
     """The Couchside pairing link (same format as the Linux agent: params ride
     the URL #FRAGMENT so browsers never send the token to any server)."""
@@ -4657,6 +4880,39 @@ def build_pair_url(token, port):
     if ip:
         url += "&ip=" + quote(ip, safe="")
     return url
+
+
+def render_pin_page(pin):
+    """Full-screen dark page showing the pairing PIN, sized to be read from a
+    couch. Served ONLY on loopback (the /pair gates), so the PIN is visible only
+    to someone physically at this PC — that is the whole consent mechanism.
+
+    Polls /api/pair/status and clears itself once the session ends (paired or
+    expired) rather than leaving a stale number on screen. A fetch error leaves
+    the page untouched: an agent restart must never paint an error here."""
+    return (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>Pair Couchside</title><style>"
+        "html,body{height:100%;margin:0;background:#0b1220;color:#e6edf3;"
+        "font-family:system-ui,Segoe UI,sans-serif;display:flex;align-items:center;"
+        "justify-content:center;text-align:center}"
+        ".w{padding:24px}h1{font-size:1.4rem;font-weight:600;color:#9fb0c0;margin:0 0 18px}"
+        ".pin{font-size:22vw;line-height:1;letter-spacing:.12em;font-weight:700;"
+        "font-variant-numeric:tabular-nums;color:#34d399}"
+        ".sub{margin-top:20px;color:#7d8da0;font-size:1rem}"
+        ".done{font-size:2rem;color:#9fb0c0}"
+        "</style></head><body><div class=\"w\">"
+        "<h1>Enter this PIN on your phone</h1>"
+        "<div class=\"pin\" id=\"pin\">" + pin + "</div>"
+        "<div class=\"sub\" id=\"sub\">Couchside &middot; pairing expires in 2 minutes</div>"
+        "</div><script>(function(){var gone=false;setInterval(function(){"
+        "fetch('/api/pair/status').then(function(r){return r.json()})"
+        ".then(function(d){if(d&&d.active===false&&!gone){gone=true;"
+        "document.getElementById('pin').outerHTML="
+        "'<div class=\"done\">Pairing finished &mdash; you can close this.</div>';"
+        "document.getElementById('sub').textContent='';}}).catch(function(){});"
+        "},3000);})();</script></body></html>")
 
 
 def render_pair_page(token, port):
@@ -4882,8 +5138,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._is_loopback() or not self._host_header_is_local():
                     self._send(403, {"error": "forbidden"}, started)
                     return
-                html = render_pair_page(self._current_token(), self.port)
+                # While a PIN-pairing session is live, this page IS the
+                # physical-presence proof: show the big PIN (loopback-only, so
+                # only someone at this PC sees it). Otherwise the usual token QR.
+                pin = pair_pin_active()
+                html = (render_pin_page(pin) if pin
+                        else render_pair_page(self._current_token(), self.port))
                 self._send_html(200, html, started)
+                return
+
+            if path == "/api/pair/status":
+                # Loopback-only: the on-screen PIN page polls this to learn when
+                # its session ended (paired or expired) so it can clear itself.
+                # Reveals only a boolean — never the PIN, never the token.
+                if not self._is_loopback():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send(200, {"active": pair_pin_active() is not None}, started)
                 return
 
             if path == "/api/ping":
@@ -5057,6 +5328,43 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._read_body()
                 self._send(404, {"error": "not found"}, started)
+                return
+
+            # UNAUTHENTICATED PIN pairing (the only unauthenticated POSTs): a
+            # phone that discovered this box enrolls via a PIN shown on the
+            # box's own screen. Bounded: /start is debounced + displays the PIN
+            # locally; /finish is TTL + attempt-capped and only returns the token
+            # for the correct PIN. Handled here, BEFORE the bearer-token gate —
+            # a phone that has no token yet cannot present one, which is why the
+            # gate used to answer 401 and made scan-and-pair impossible on
+            # Windows (issue #256).
+            if path in ("/api/pair/start", "/api/pair/finish"):
+                if self._body_too_large():
+                    self.close_connection = True
+                    self._send(413, {"error": "request body too large"}, started)
+                    return
+                pair_body = self._read_body()
+                if path == "/api/pair/start":
+                    _pin, ttl, fresh = pair_pin_start()
+                    # Pop the box screen ONLY on a fresh mint: a repeat /start
+                    # inside the debounce window returns the same PIN and must
+                    # not throw another window at whoever is at the PC.
+                    if fresh:
+                        pair_show_on_box(self.port)
+                    self._send(200, {"ok": True, "ttl": ttl}, started)
+                    return
+                try:
+                    req = json.loads(pair_body.decode("utf-8")) if pair_body else {}
+                    submitted = req.get("pin")
+                except (ValueError, UnicodeDecodeError):
+                    submitted = None
+                try:
+                    pair_pin_check(submitted)
+                except ValueError as e:
+                    self._send(403, {"ok": False, "error": str(e)}, started)
+                    return
+                self._send(200, {"ok": True, "token": self._current_token(),
+                                 "port": self.port}, started)
                 return
 
             # Authorize BEFORE reading the body: an unauthenticated client must
@@ -5801,6 +6109,11 @@ class QuietThreadingHTTPServer(ThreadingHTTPServer):
 
 
 def main():
+    # FIRST: start the log tee, so even a startup crash lands somewhere readable.
+    # Under pythonw.exe (how the scheduled task runs us) there is no console and
+    # every print() would otherwise be discarded.
+    _log = start_agent_log()
+
     p = argparse.ArgumentParser(description="Couchside box agent (Windows)")
     p.add_argument("--port", type=int, default=None,
                    help="listen port (overrides config; default %d)" % DEFAULT_PORT)
