@@ -33,6 +33,11 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
+; The brand mark, on CouchsideSetup.exe itself and in the wizard's title bar.
+; Synced from the monorepo's brand pack (brand/couchside.ico) — build.ps1 stamps
+; the same file into couchside-agent.exe, so the download, the wizard, the
+; running agent, and the Apps & features entry all show one icon.
+SetupIconFile=..\couchside.ico
 UninstallDisplayName=Couchside (agent)
 ; The agent exe lives where install.ps1 puts it, not in the bootstrap dir.
 UninstallDisplayIcon={localappdata}\Couchside\agent\couchside-agent.exe
