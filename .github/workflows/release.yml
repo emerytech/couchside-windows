@@ -21,6 +21,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      # WAS MISSING. build.ps1 hard-errors without the DLL, so a tag would
+      # simply fail here; before that hard error existed, this gap is what
+      # published a CouchsideSetup.exe with no working pad (issue #255).
+      - uses: ./.github/actions/fetch-vigem
+
       - name: Build couchside-agent.exe (PyInstaller)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
 
