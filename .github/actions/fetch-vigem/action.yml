@@ -1,0 +1,51 @@
+name: Fetch ViGEmClient.dll
+description: >
+  Put the official redistributable ViGEmClient.dll next to build.ps1, which
+  REQUIRES it and hard-errors without it.
+
+# Why this exists at all, and why it is a hard failure:
+#
+# vigem_available() in the agent is a DLL-LOAD check. An agent built without
+# ViGEmClient.dll reports caps.gamepad=false, and the phone app then hides the
+# Pad tab entirely -- the headline feature. That shipped once already (issue
+# #255): a user on 0.4.1-win had the ViGEmBus DRIVER installed and working, no
+# client DLL anywhere, and no Pad tab. build.ps1 used to do
+#     if (Test-Path $dll) { ... }
+# which succeeds silently when the file is missing, so the release that produced
+# that installer looked completely green.
+#
+# The DLL is .gitignore'd here and is never committed, so every workflow that
+# runs build.ps1 has to fetch it first. Factored into one composite action
+# because BOTH build-installer.yml and release.yml need it and they must not
+# drift -- release.yml missing this step is what let the pad-less installer out.
+#
+# Source is the vgamepad PyPI sdist, which ships prebuilt x64/x86 copies of
+# Nefarius' official client. NOT the ViGEmClient GitHub releases (source only,
+# no binary assets) and NOT NuGet (those packages are managed .NET, unloadable
+# by ctypes).
+#
+# Every failure path throws. A release that cannot produce a working pad must
+# stop here, loudly, rather than publish an installer that silently has no Pad
+# tab on every machine that installs it.
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch ViGEmClient.dll (x64) from the vgamepad sdist
+      shell: pwsh
+      run: |
+        $tmp = Join-Path $env:RUNNER_TEMP 'vigem'
+        New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+        $meta = Invoke-RestMethod -Uri 'https://pypi.org/pypi/vgamepad/json' -TimeoutSec 20
+        $sdist = ($meta.urls | Where-Object { $_.packagetype -eq 'sdist' } | Select-Object -First 1).url
+        if (-not $sdist) { throw 'no vgamepad sdist on PyPI' }
+        $tgz = Join-Path $tmp 'vgamepad.tar.gz'
+        Invoke-WebRequest -Uri $sdist -OutFile $tgz -TimeoutSec 60 -UseBasicParsing
+        # tar.exe is bsdtar, present on Windows 10 1803+ and on windows-latest.
+        & tar.exe -xzf $tgz -C $tmp
+        $hit = Get-ChildItem $tmp -Recurse -Filter 'ViGEmClient.dll' -ErrorAction SilentlyContinue |
+               Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+        if (-not $hit) { throw 'ViGEmClient.dll (x64) not found in the vgamepad sdist' }
+        # build.ps1 looks for the DLL next to itself, i.e. the repo root.
+        Copy-Item $hit.FullName (Join-Path $env:GITHUB_WORKSPACE 'ViGEmClient.dll') -Force
+        Get-Item (Join-Path $env:GITHUB_WORKSPACE 'ViGEmClient.dll') | Format-List Name, Length
