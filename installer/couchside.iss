@@ -15,6 +15,13 @@
   #define MyAppVersion "0.0.0-dev"
 #endif
 
+; Brand icon, mirrored to the repo root by sync.yml from the monorepo's
+; brand/couchside.ico. Optional at compile time: a checkout without it still
+; builds (with Inno's default icon), exactly like build.ps1 treats it, so a
+; missing mirror never blocks a release build.
+#define IcoSrc "..\couchside.ico"
+#define HaveIco FileExists(AddBackslash(SourcePath) + IcoSrc)
+
 [Setup]
 AppId={{A9E2C6B1-6C3E-4E7B-9F1A-COUCHSIDEWIN}}
 AppName=Couchside
@@ -34,8 +41,20 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName=Couchside (agent)
+#if HaveIco
+SetupIconFile={#IcoSrc}
+; Point Apps & features at an icon THIS installer owns, not at the agent exe.
+; It used to read {localappdata}\Couchside\agent\couchside-agent.exe, which is
+; blank whenever that exe is not a current, icon-stamped build -- and there are
+; two ordinary ways for that to happen: install.ps1 can take its Python path
+; (no exe at that path at all), and the agent self-update overwrites the exe
+; with whatever the release asset contains. A file the installer places itself
+; is stable across both.
+UninstallDisplayIcon={app}\couchside.ico
+#else
 ; The agent exe lives where install.ps1 puts it, not in the bootstrap dir.
 UninstallDisplayIcon={localappdata}\Couchside\agent\couchside-agent.exe
+#endif
 ; Always leave a log in %TEMP% (Setup Log*.txt). The real install work happens in
 ; a hidden PowerShell child, so when it fails the log is the only breadcrumb —
 ; the failure message below points users at it.
@@ -56,6 +75,12 @@ Source: "..\install.ps1";              Flags: dontcopy
 ; A second, persistent copy of install.ps1: [UninstallRun] needs it long after
 ; {tmp} is gone. 33 KB — the 11 MB agent exe is deliberately NOT duplicated.
 Source: "..\install.ps1";              DestDir: "{app}"; Flags: ignoreversion
+#if HaveIco
+; 17 KB, and it must OUTLIVE setup: UninstallDisplayIcon above reads it from
+; {app} every time Apps & features draws the list. uninsneveruninstall would
+; strand it after removal, so let it go with {app}.
+Source: "{#IcoSrc}";                   DestDir: "{app}"; Flags: ignoreversion
+#endif
 
 [UninstallRun]
 ; Mirror uninstall through the same tested path (removes the task, firewall

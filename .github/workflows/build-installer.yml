@@ -28,6 +28,30 @@ jobs:
         with:
           python-version: "3.12"
 
+      # build.ps1 REQUIRES ViGEmClient.dll and hard-errors without it, on purpose:
+      # an agent built without it reports caps.gamepad=false and the phone app
+      # hides the Pad tab entirely (issue #255). The DLL is .gitignore'd here and
+      # is never committed, so CI has to fetch it -- the same official
+      # redistributable copy install.ps1 pulls, out of the vgamepad PyPI sdist.
+      # Hard-fail: an installer that silently ships without a working pad is the
+      # exact bug we are fixing, so it must never reach the artifact.
+      - name: Fetch ViGEmClient.dll (required by build.ps1)
+        shell: pwsh
+        run: |
+          $tmp = Join-Path $env:TEMP 'vigem'
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          $meta  = Invoke-RestMethod -Uri 'https://pypi.org/pypi/vgamepad/json' -TimeoutSec 20
+          $sdist = ($meta.urls | Where-Object { $_.packagetype -eq 'sdist' } | Select-Object -First 1).url
+          if (-not $sdist) { throw 'no vgamepad sdist on PyPI' }
+          $tgz = Join-Path $tmp 'vgamepad.tar.gz'
+          Invoke-WebRequest -Uri $sdist -OutFile $tgz -TimeoutSec 60 -UseBasicParsing
+          & tar.exe -xzf $tgz -C $tmp
+          $hit = Get-ChildItem $tmp -Recurse -Filter 'ViGEmClient.dll' |
+                 Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+          if (-not $hit) { throw 'ViGEmClient.dll (x64) not found in the vgamepad sdist' }
+          Copy-Item $hit.FullName (Join-Path $PWD 'ViGEmClient.dll') -Force
+          Get-Item ViGEmClient.dll | Format-List Name, Length
+
       - name: Build couchside-agent.exe (PyInstaller)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
 

@@ -41,6 +41,10 @@ jobs:
           curl -fsSL "$BASE/agent/win/build.ps1"          -o build.ps1
           curl -fsSL "$BASE/agent/qr.py"                  -o qr.py
           curl -fsSL "$BASE/install.ps1"                  -o install.ps1
+          # The brand icon. build.ps1 stamps it into couchside-agent.exe and the
+          # installer shows it in Apps & features; both fall back to a blank
+          # default when it is absent, silently, so keep it in the mirror.
+          curl -fsSL "$BASE/brand/couchside.ico"          -o couchside.ico
 
       - name: Syntax gate (never publish a broken sync)
         run: python3 -m py_compile couchsided-win.py qr.py
