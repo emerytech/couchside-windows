@@ -95,6 +95,19 @@ Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install.ps1"" -Uninstall -FromInstaller"; \
   Flags: runhidden waituntilterminated; RunOnceId: "CouchsideAgentUninstall"
 
+[Tasks]
+; Discoverable, OFF by default (least privilege). When ticked, the wizard passes
+; -Elevated to install.ps1 so the agent runs as administrator and the phone can
+; control ADMIN windows — Windows UIPI blocks a non-elevated agent from injecting
+; input into a higher-integrity foreground window (games with anticheat, admin
+; terminals, installers). This is the exe-installer equivalent of install.ps1's
+; interactive prompt and the tray widget's "Control admin windows" toggle (the
+; tray is Python-installs-only, so the exe path needs this checkbox to be able to
+; enable it at all). Trade-off: a phone holding this box's token could then drive
+; admin app windows with the virtual mouse/keyboard (the command allowlist still
+; holds — no arbitrary shell).
+Name: "elevated"; Description: "Let my phone control admin windows (games with anticheat, admin apps) — runs the agent as administrator"; GroupDescription: "Advanced (optional):"; Flags: unchecked
+
 [Code]
 // Hand off to the real installer, and REPORT ITS EXIT CODE.
 //
@@ -134,6 +147,7 @@ Filename: "powershell.exe"; \
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
+  Params: String;
 begin
   Result := '';
   WizardForm.PreparingLabel.Caption :=
@@ -150,9 +164,14 @@ begin
     that child's exit code outward (and skip -NoExit, so no stray PowerShell
     window outlives the wizard). Without it we would be reading the exit code of
     the async RunAs handoff, which returns 0 instantly no matter what happens. }
-  if not Exec('powershell.exe',
-       '-NoProfile -ExecutionPolicy Bypass -File "' +
-         ExpandConstant('{tmp}\install.ps1') + '" -FromInstaller',
+  { -FromInstaller keeps the UAC self-elevation synchronous (see above); append
+    -Elevated only when the user ticked the optional task, so the agent task is
+    registered RunLevel Highest and the phone can drive admin windows. }
+  Params := '-NoProfile -ExecutionPolicy Bypass -File "' +
+    ExpandConstant('{tmp}\install.ps1') + '" -FromInstaller';
+  if WizardIsTaskSelected('elevated') then
+    Params := Params + ' -Elevated';
+  if not Exec('powershell.exe', Params,
        ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     Result := 'Setup could not start the Couchside installer script.' + #13#10 +
               'Windows said: ' + SysErrorMessage(ResultCode)
