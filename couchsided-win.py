@@ -6940,6 +6940,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     Pad session, so the cap must comfortably exceed a household's phones. TLS
     handshakes use the same capped workers, with their own short deadline.
     """
+    request_queue_size = 128
     _MAX_CONNECTIONS = 128
     _TLS_HANDSHAKE_TIMEOUT_S = 5.0
 
