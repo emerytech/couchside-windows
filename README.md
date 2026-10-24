@@ -39,7 +39,9 @@ before writing a single file, and refuses to continue if either fails.
 
 ## Build a standalone .exe
 `build.ps1` produces a self-contained `couchside-agent.exe` via PyInstaller, so end users need no
-Python:
+Python. Release builds run without a console; diagnostics remain in the rotating
+`%LOCALAPPDATA%\Couchside\logs\agent.log` file. Use `build.ps1 -Console`
+only for a developer build with terminal output.
 ```powershell
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
