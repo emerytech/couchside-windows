@@ -64,3 +64,12 @@ jobs:
           name: CouchsideSetup
           path: dist/CouchsideSetup.exe
           if-no-files-found: error
+
+      # Also retain the exact inner executable for in-place preview testing.
+      # This is a workflow artifact, not a release or installer behavior change.
+      - name: Upload standalone preview agent
+        uses: actions/upload-artifact@v4
+        with:
+          name: CouchsideAgentPreview
+          path: dist/couchside-agent.exe
+          if-no-files-found: error
