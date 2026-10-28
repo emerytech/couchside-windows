@@ -37,3 +37,44 @@ post-reboot logon test. A VM snapshot and protected Couchside-only backups remai
 available for rollback. Raw logs, identity files and machine-specific test helpers
 remain private. No merge, release, update-manifest change or store submission was
 performed.
+
+
+## Combined candidate upgrade validation (2026-10-28; publication on hold)
+
+The owner-authorized Windows VM was upgraded with the actual Inno wrapper from
+runtime source `5c96b4d` / build run `40523441131`. The original physical PC was
+inspected read-only and was not upgraded or rebooted in this pass. A protected
+Couchside-only backup and a VM disk/EFI/TPM snapshot were retained.
+
+- The old installation started automatically at the owner's initial desktop
+  sign-in. The candidate replaced the installed executable with the expected
+  `dba4c5f...` hash. Both binaries report `0.4.14-win`, so the executable hash,
+  rather than the version label, proves the upgrade.
+- The first unattended wrapper log recorded installation success. Its remote
+  harness timed out after the installer had exited; it used PowerShell
+  `Start-Process -Wait`, which can also wait for descendant processes. A repeat
+  installation waited only for the installer process and
+  returned exit code 0; no installer code was changed to work around the harness.
+- Pairing token, configuration (including its existing backup), TLS certificate
+  and private key retained their original bytes and file ACLs. No uninstall,
+  re-pairing, certificate replacement, or phone-data reset was performed.
+- The candidate ran under the Limited/Interactive task in the signed-in desktop.
+  Its expected PyInstaller parent/child pair had no main window handles; a single
+  child owned both HTTP and HTTPS listeners. This is not a second agent instance.
+- The existing token authenticated status. An HTTPS smoke check trusted the
+  existing certificate with hostname validation enabled. A 65,581-byte synthetic
+  upload matched its destination; only that test file was removed. Status without
+  authentication returned 401 and plaintext upload returned 426.
+- A guest reboot was confirmed by a changed Windows boot timestamp. Before
+  subsequent user sign-in, the task correctly remained Ready and no agent ran.
+  **The candidate's post-reboot user-sign-in/startup check is still pending.**
+
+Installer SHA-256:
+`68eecd3015edfa88e709547c962792d0daafdc7fb47b2cfdc00b75d6386bd646`.
+Installed agent SHA-256:
+`dba4c5fbe53db1dad39cca4d6023c8733b8472b0313d2bd0f17ab8d4abd58674`.
+
+This pass does not claim phone reconnection, physical-PC compatibility, first-ever
+ViGEm installation, or interactive wizard/UAC consent verification. The candidate
+remains unsigned by Authenticode. Store submission, release publication, public
+update-manifest changes, and email sends remain on hold.
