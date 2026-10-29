@@ -300,3 +300,33 @@ Native iPhone-to-Windows upload and active-transfer background/resume remain
 release gates. Earlier iPhone-to-SteamOS encrypted-upload validation is unchanged.
 No runtime source, certificate, pairing, system privileges or firewall settings
 were changed. No release, store submission, main merge or subscriber email.
+
+## Second physical Windows upgrade: older Python install (2026-10-29)
+
+The owner authorized upgrading another physical Windows PC for a local iPhone
+comparison. It previously ran the Python-based agent reporting `0.3.5-win`.
+
+- Before installation, a protected Couchside-only backup captured application
+  files, pairing/configuration, file hashes/ACLs and the startup task. The copied
+  preview installer matched the previously tested candidate SHA-256.
+- The interactive Inno wizard reached its successful completion screen. The
+  optional administrator-control checkbox remained unchecked. A Windows UAC
+  consent prompt was observed during installation; this is not an automated
+  credential-entry or first-ever driver-install pass.
+- The installed executable matched `dba4c5f...`. The existing token and config
+  retained their bytes and ACLs. The agent ran in the signed-in session with a
+  Limited/Interactive task, no agent main window, and one worker owning both
+  HTTP and HTTPS listeners. Status confirmed non-elevated mode and UIAccess off.
+- A loopback HTTPS scoped-ticket upload returned 200 and its 65,582-byte synthetic
+  destination matched by SHA-256. Standard certificate and hostname validation
+  remained enabled. This is agent-side evidence, not a native phone-upload pass.
+- The test clients use routed Wi-Fi while the PC is on a different wired subnet.
+  The installed HTTPS firewall rule is restricted to `LocalSubnet`, and external
+  HTTPS connection attempts timed out. Its scope was left unchanged. An exact
+  two-device temporary exception and removal script were prepared privately for
+  owner review; neither had been applied at this checkpoint.
+
+The iPhone comparison remains pending network access and pairing. No reboot,
+phone-data reset, privilege elevation for the agent, public release, store
+submission or subscriber email occurred. All host addresses, device identifiers,
+backup locations, pairing material and raw logs remain private.
