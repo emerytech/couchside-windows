@@ -117,3 +117,51 @@ manifest change, or subscriber send was performed.
 The completed VM test agent was stopped after validation to avoid simultaneously
 advertising a clone of the original PC's preserved pairing identity. Its logon task
 and saved configuration were retained. The physical PC's candidate remains running.
+
+## Android phone checks against the physical candidate (2026-10-28)
+
+The owner's USB-connected Motorola Razr 2023 ran Direct `2.9.79 (48)` against
+the same upgraded physical Windows candidate (`dba4c5f...`). No app reinstall,
+data reset, new pairing, or agent privilege change was used for these checks.
+
+- All three saved boxes remained in the selector. Selecting the existing Windows
+  entry established a green, locked connection without a pairing prompt. Previously
+  unlocked controls remained usable.
+- Phone keyboard input reached a disposable Notepad document, including letters,
+  numbers, spaces and punctuation. Backspace removed the expected character. A tap
+  on Gboard's Done button inserted exactly one CRLF between two distinct markers,
+  confirmed by reading the saved Windows file. Initial focus on Steam rather than
+  Notepad was corrected before treating the typing result as meaningful.
+- Native document-picker uploads of a 60-byte text file and an 8,388,608-byte binary
+  file reached the Windows upload directory. Both destination sizes and SHA-256
+  hashes matched the original fixtures. The app displayed the encrypted-transfer
+  explanation; this candidate's HTTP-upload rejection was verified separately
+  above. The small upload displayed its success message.
+- After backgrounding and resuming the phone app, the saved Windows connection
+  returned with its green lock. Mouse-pad movement and right-click opened Notepad's
+  context menu at a new position; Escape dismissed it. Two phone Alt-Tab actions
+  switched to Steam and back to Notepad without loss of the connection.
+- Android's process-exit history contained no new crash/ANR entry during these
+  checks. This is a functional smoke check, not the deferred long memory soak.
+
+Follow-ups remain before calling phone QA complete:
+
+- The larger upload arrived intact, but its success message was absent when the
+  app was inspected afterward. Investigate confirmation lifetime/remount behavior;
+  file delivery passed, durable success feedback did not receive a pass.
+- One injected Android hardware Enter produced two CRLFs, while Gboard's actual
+  Done button produced one. Keep hardware-key handling as a separate compatibility
+  follow-up; do not conflate the two input paths.
+- The administrator-window warning/recovery check remains unverified. An existing
+  RTSS window was opened without changing its settings, but subsequent laptop-mode
+  controls did not respond reliably to automated taps. Android Back recovered the
+  Console. Physical-touch confirmation is needed before attributing that behavior
+  to the app rather than the control harness. RTSS/Afterburner were minimized again;
+  the agent remained at normal privileges.
+- iPhone testing is explicitly deferred by the owner. Caret-in-the-middle editing,
+  two-finger scrolling, cancellation/retry and backgrounding during an active
+  transfer were not validated in this pass.
+
+Raw device screenshots, exact saved test text, machine addresses, license/pairing
+data and QA helpers remain private. Only this sanitized result is committed. No
+main merge, release, manifest change, store submission or email send was performed.
