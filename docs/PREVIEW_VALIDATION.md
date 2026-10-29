@@ -253,10 +253,16 @@ that the installed binary was delivered through TestFlight.
   The agent stayed non-elevated with UIAccess disabled. RTSS/Afterburner settings
   were not changed, and both windows were minimized again.
 
-Native iPhone uploads, active-transfer background/resume, and fresh iPhone checks
-against the SteamOS companion remain pending. Mirroring's automated scrolling
-did not move the Console; the owner scrolled to the upload card manually. This
-control-harness limitation is not treated as an app crash or transfer failure.
+Native iPhone uploads and active-transfer background/resume against the Windows
+candidate remain pending in this pass. iPhone-to-SteamOS encrypted uploads were
+validated earlier, as the owner reconfirmed on October 29; they should not be
+listed as untested merely because this pass did not repeat them. No new transfer
+timings or file hashes are asserted for that earlier result here. Fresh SteamOS
+control checks remain distinct from the completed upload validation.
+
+Mirroring's automated scrolling did not move the Console; the owner scrolled to
+the upload card manually. This control-harness limitation is not treated as an
+app crash or transfer failure.
 
 Only sanitized QA documentation is published. Raw inventories, exact test text,
 addresses and private evidence remain local. No runtime changes, release, main
