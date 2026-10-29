@@ -400,3 +400,15 @@ release, main merge, store submission or subscriber email.
 No Windows runtime source change. Temporary phone test firewall rules were
 removed, original rules retained, and the Android rotation setting restored.
 No release, store submission, public update manifest or subscriber email.
+
+
+### Patched local iPhone retest
+
+Owner-only local iPhone build 273.1 (Couchside source 27c0490) retained four boxes,
+paired Windows access and the Early Adopter unlock. A foreground 128 MiB transfer
+passed exact size and SHA-256. In the Home test, server-side open-handle samples
+recorded another 16 MiB after the owner confirmed Home, then iOS expired the
+bounded background allowance at roughly 30 seconds. The app reported the explicit
+expiration reason; the partial file was removed and no final file published.
+Full large-background completion remains blocked. Temporary test firewall access
+was removed and original rules retained. No Windows runtime change or release.
