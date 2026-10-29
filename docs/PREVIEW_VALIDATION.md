@@ -349,3 +349,31 @@ The exact temporary firewall rule was removed and verified absent afterward;
 original installer rules remain intact. No runtime changes, release, main merge,
 store submission, public manifest update or subscriber email occurred. Private
 addresses, credentials, backup paths and raw evidence remain local.
+
+## Native iPhone work-PC comparison (2026-10-29)
+
+After owner approval, the existing work-PC pairing token was saved in its separate
+iPhone entry; the three prior saved boxes remained present. Authenticated Console
+status reported the Windows preview and fresh vitals.
+
+- Native iPhone document-picker uploads of synthetic 60-byte and 8 MiB files
+  reached the Windows Downloads/Couchside directory. Destination size and SHA-256
+  exactly matched both source fixtures. The app reported encrypted transfers,
+  retained its paired TLS identity, and no plaintext upload fallback was used.
+- Couchside was sent to Home immediately after the larger selection. The complete
+  destination was verified before reopening the app; the saved connection and
+  Console resumed. The transfer was too fast to establish that it was still in
+  progress at backgrounding, so active-transfer background continuation is NOT
+  marked passed by this check.
+- A rapid synthetic phrase entered through iPhone Mirroring into the phone's
+  keyboard field reached a disposable Windows Notepad tab with repeated and
+  incorrect characters. The phone field showed the intended phrase. A separate
+  slow one-character-at-a-time comparison correctly produced all four characters.
+  This is a rapid-input failure under the automation path, not proof of its cause
+  or a claim that ordinary physical typing necessarily reproduces it. Keep it open
+  for tracing and physical-typing comparison before release.
+
+The successful direct-address native uploads narrow the earlier Tailscale failure
+but do not resolve it. The owner-approved two-device firewall exception was
+removed again after testing; original rules retained. No runtime source change,
+release, main merge, store submission or subscriber email.
