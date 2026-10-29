@@ -165,3 +165,36 @@ Follow-ups remain before calling phone QA complete:
 Raw device screenshots, exact saved test text, machine addresses, license/pairing
 data and QA helpers remain private. Only this sanitized result is committed. No
 main merge, release, manifest change, store submission or email send was performed.
+
+## Android follow-up: warning, editing and upload lifecycle (2026-10-28)
+
+Further checks on the same Razr build and physical Windows candidate resolved
+several of the preceding open observations without changing runtime code:
+
+- In the standard portrait Pad, focusing the existing RTSS administrator window
+  caused the explicit administrator-app-blocks-input warning to appear. Switching
+  Windows focus back to normal Notepad cleared the warning and phone typing
+  resumed without reconnecting or re-pairing. The agent stayed non-elevated with
+  UIAccess disabled. No RTSS/Afterburner settings were changed, and both windows
+  were minimized again afterward. This does not validate the laptop-mode warning.
+- Moving the phone compose caret into `abcd`, inserting `X`, then deleting it
+  produced `abXcd` and then `abcd` on Windows, preserving the suffix. The final
+  saved disposable document was read back to verify the result.
+- Canceling the native picker returned to the idle upload card without an error;
+  reopening it and sending another file worked.
+- Timed screenshots of a fresh 8 MiB upload captured the sending state and then
+  the success receipt at 8 and 15 seconds after selection. A later observation
+  showed the neutral prompt. The source deliberately clears success after 12
+  seconds from completion; the previously absent receipt is therefore explained
+  by its intended lifetime, not demonstrated transfer failure. The destination
+  size and hash matched again.
+- Another uniquely named 8 MiB file was visibly still sending just before the
+  phone went Home. Its complete destination and matching SHA-256 were verified
+  while Couchside remained backgrounded, before reopening the app. Returning to
+  Couchside retained the green locked connection. This is a brief background
+  transfer check, not a long-duration or process-termination guarantee.
+
+The injected hardware-Enter duplication, laptop-mode interaction/warning checks,
+and two-finger scrolling remain open. iPhone testing is still deferred. The Steam
+Machine was not reachable during this pass, so its prerelease-agent live checks
+are still pending. No new binaries, release, merge, manifest or email was issued.
