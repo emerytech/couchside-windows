@@ -229,3 +229,35 @@ Windows installer certification:
 
 No agent replacement, app install, pairing reset, main merge, release, public
 manifest change or email send occurred. iPhone validation remains deferred.
+
+## Physical iPhone input and warning checks (2026-10-29)
+
+The owner made the iPhone available, superseding the earlier device-test deferral.
+The installed native app was verified as 2.9.79(273); this check does not assert
+that the installed binary was delivered through TestFlight.
+
+- The existing Windows pairing reconnected with its green lock. The app retained
+  three saved boxes and its prior unlock state, without reinstalling or re-pairing.
+- Mixed-case text, punctuation, numbers, backspace and Return reached a disposable
+  Notepad document. Saved-file readback confirmed exactly one CRLF for the tested
+  Mirroring keyboard Return path. This does not cover the on-screen iOS keyboard
+  or resolve the separate Android injected-hardware-Enter observation.
+- Moving the compose caret into `abcd`, inserting and deleting `X`, preserved
+  the suffix on Windows. The saved document confirmed the final text.
+- The phone right-click opened Notepad's context menu. Phone Alt-Tab returned
+  from Steam to Notepad without losing the saved connection. Calibrated mouse
+  movement and two-finger scrolling were not isolated sufficiently for a pass.
+- Focusing the existing RTSS administrator window displayed the explicit
+  administrator-app-blocks-input warning. Returning focus to normal Notepad
+  cleared it, and new phone typing arrived without reconnecting or re-pairing.
+  The agent stayed non-elevated with UIAccess disabled. RTSS/Afterburner settings
+  were not changed, and both windows were minimized again.
+
+Native iPhone uploads, active-transfer background/resume, and fresh iPhone checks
+against the SteamOS companion remain pending. Mirroring's automated scrolling
+did not move the Console; the owner scrolled to the upload card manually. This
+control-harness limitation is not treated as an app crash or transfer failure.
+
+Only sanitized QA documentation is published. Raw inventories, exact test text,
+addresses and private evidence remain local. No runtime changes, release, main
+merge, public manifest change, store submission or email send occurred.
