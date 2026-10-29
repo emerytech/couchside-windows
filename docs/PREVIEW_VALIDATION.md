@@ -412,3 +412,24 @@ bounded background allowance at roughly 30 seconds. The app reported the explici
 expiration reason; the partial file was removed and no final file published.
 Full large-background completion remains blocked. Temporary test firewall access
 was removed and original rules retained. No Windows runtime change or release.
+
+
+## iPhone background continuation and cancellation follow-up (2026-10-29)
+
+This supersedes the earlier bounded-background failure as the current result.
+Local owner-only iPhone build 273.3 completed a synthetic 128 MiB encrypted
+upload while Couchside was at Home. The Windows copy matched source size and
+SHA-256 exactly. The owner confirmed the system activity displayed Transfer
+complete at 100 percent.
+
+A second upload stopped through the system activity after partial reception.
+The staging file was removed and no completed destination appeared. A fresh
+user-selected retry completed in the background with the same exact size/hash
+and no remaining staging files. All temporary device-test firewall access was
+removed; original rules retained. No Windows runtime change was needed.
+
+The owner accepts keyboard checks as complete and defers the Tailscale-transfer
+issue without making it a release blocker. Windows signing/distribution remains
+an open decision. Final combined artifacts await custom PAD work and source/
+version reconciliation. No main merge, release, store submission, public
+manifest change or subscriber email is authorized by this record.
