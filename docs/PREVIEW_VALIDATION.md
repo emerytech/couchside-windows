@@ -377,3 +377,26 @@ The successful direct-address native uploads narrow the earlier Tailscale failur
 but do not resolve it. The owner-approved two-device firewall exception was
 removed again after testing; original rules retained. No runtime source change,
 release, main merge, store submission or subscriber email.
+
+
+## Physical typing and larger background attempt (2026-10-29)
+
+- The owner physically typed into the iPhone's Couchside keyboard and confirmed
+  Windows received matching text. The Mirroring burst corruption was not
+  reproduced by this normal typing comparison; its cause remains untraced.
+- Android Direct build 51 rapid typing, replacement and Backspace reached Windows
+  correctly. One Return produced an extra blank line; both phone input components
+  dispatch Return from keypress and submit. The app-side fix is held on
+  `codex/keyboard-event-order-20261029` in the Couchside repository, pending signed
+  phone retesting. The build 51 source provenance still needs reconciliation.
+- A synthetic 128 MiB iPhone attempt followed by Home failed with
+  ERR_UPLOAD_FAILED. Final server readback had no complete destination or partial
+  file. The progress-observer process timed out, so no continuous progress trace
+  proves when or why it failed. Background continuation remains a release gate.
+- The app branch adds bounded iOS background execution and safe numeric failure
+  detail. It retains TLS pinning and does not add plaintext fallback. Local
+  transport tests do not substitute for repeating the signed phone background test.
+
+No Windows runtime source change. Temporary phone test firewall rules were
+removed, original rules retained, and the Android rotation setting restored.
+No release, store submission, public update manifest or subscriber email.
