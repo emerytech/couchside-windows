@@ -267,3 +267,36 @@ app crash or transfer failure.
 Only sanitized QA documentation is published. Raw inventories, exact test text,
 addresses and private evidence remain local. No runtime changes, release, main
 merge, public manifest change, store submission or email send occurred.
+
+## Off-site Tailscale upload check (2026-10-29)
+
+The owner requested testing from away from home against the physical Windows
+preview. Tailscale connectivity and agent reachability were confirmed; the VM
+agent was left unchanged.
+
+- A separate Mac-to-Windows HTTPS upload over Tailscale returned 200 and matched
+  destination size and SHA-256. It used the certificate obtained through the
+  verified SSH host, validated its existing LAN peer identity over the overlay
+  transport, and checked the exact certificate fingerprint. It is server/network
+  evidence, not a substitute for native iPhone validation. Ordinary hostname
+  validation of the literal overlay IP failed because that IP is absent from the
+  existing certificate's SANs; no certificate or saved pin was replaced.
+- The existing paired iPhone box was temporarily changed to the explicit
+  Tailscale address. Windows observed established HTTPS connections from the
+  iPhone's Tailscale address, and authenticated status requests returned 200.
+- Selecting a downloaded synthetic 60-byte file through the native document
+  picker failed with `ERR_UPLOAD_FAILED`. The agent logged a successful ticket
+  request from the iPhone, but no corresponding upload request. Destination
+  readback found no test file. This is a failed native upload check; the precise
+  TLS/native-session cause is not established by the generic app error.
+- The Console showed an unreachable banner despite fresh status/vitals; Setup's
+  box card remained green. Keep this reachability inconsistency as a separate
+  finding rather than treating successful API calls as proof of correct UI state.
+- The original Windows address was restored through the app editor, retaining
+  the saved pairing and green lock. An original-address upload comparison was
+  not completed: Mirroring subsequently disconnected with iPhone-in-use.
+
+Native iPhone-to-Windows upload and active-transfer background/resume remain
+release gates. Earlier iPhone-to-SteamOS encrypted-upload validation is unchanged.
+No runtime source, certificate, pairing, system privileges or firewall settings
+were changed. No release, store submission, main merge or subscriber email.
