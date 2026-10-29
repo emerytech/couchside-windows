@@ -330,3 +330,22 @@ The iPhone comparison remains pending network access and pairing. No reboot,
 phone-data reset, privilege elevation for the agent, public release, store
 submission or subscriber email occurred. All host addresses, device identifiers,
 backup locations, pairing material and raw logs remain private.
+
+## Routed work-network HTTPS comparison (2026-10-29)
+
+With owner approval, a temporary HTTPS firewall exception was limited to the
+two owner test devices and the verified Couchside executable. A Mac client
+then passed standard certificate and hostname validation, authenticated status,
+scoped-ticket issuance and upload (all 200). The synthetic 65,576-byte destination
+matched SHA-256. This confirms the routed network/server path, not native iOS
+upload compatibility.
+
+The iPhone retained its three existing boxes and gained a separate test entry.
+No work pairing token was saved while owner approval for that step was pending.
+The protected status request correctly rejected the unauthenticated entry. Native
+upload and active-transfer background/resume remain untested on this work PC.
+
+The exact temporary firewall rule was removed and verified absent afterward;
+original installer rules remain intact. No runtime changes, release, main merge,
+store submission, public manifest update or subscriber email occurred. Private
+addresses, credentials, backup paths and raw evidence remain local.
