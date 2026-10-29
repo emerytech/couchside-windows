@@ -198,3 +198,34 @@ The injected hardware-Enter duplication, laptop-mode interaction/warning checks,
 and two-finger scrolling remain open. iPhone testing is still deferred. The Steam
 Machine was not reachable during this pass, so its prerelease-agent live checks
 are still pending. No new binaries, release, merge, manifest or email was issued.
+
+## Companion SteamOS compatibility smoke (2026-10-28)
+
+The Steam Machine became reachable later in the same QA session. This is a
+separate Linux compatibility check with Razr Direct 2.9.79(48), not additional
+Windows installer certification:
+
+- The existing saved pairing reconnected with the encrypted-connection indicator.
+  The installed Linux agent reports 2.9.134. Its source differs from the app
+  candidate in separate Player functionality; it was inspected and left intact.
+  These results therefore do not certify an exact frozen release-agent binary.
+- Phone right/left swipe input moved Steam's selected tile in both directions,
+  verified through fresh screen frames rather than command responses alone.
+- Native 60-byte and 8 MiB uploads arrived with matching sizes and SHA-256 hashes.
+  The larger upload completed while the app remained backgrounded, before resume;
+  returning retained the saved secure connection.
+- With four raw TLS connections left without a handshake, three independent
+  certificate-verified HTTPS status requests returned 200 in 16–21 ms. All test
+  sockets were closed afterward. This is a bounded responsiveness smoke test,
+  not a load-test or denial-of-service guarantee.
+- One suspend/wake cycle was initiated through the native phone UI. The box went
+  offline, the app showed wake progress, the connection indicator was online by
+  the 10-second capture, and the 20-second capture showed “Box is awake.” The
+  system journal confirmed suspend/resume; fresh screen capture and verified
+  HTTPS worked afterward. The machine was left awake.
+- The owner confirmed that the laptop-mode X exits correctly by physical touch.
+  Automated laptop-mode taps remain unreliable, so they are not treated as proof
+  of a broken exit control or a complete laptop-mode interaction pass.
+
+No agent replacement, app install, pairing reset, main merge, release, public
+manifest change or email send occurred. iPhone validation remains deferred.
