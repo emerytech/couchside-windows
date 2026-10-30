@@ -1,0 +1,57 @@
+Couchside Windows agent - privacy and system changes
+=====================================================
+
+Please read this before installing. Full privacy policy:
+https://couchside.tv/privacy
+
+WHAT COUCHSIDE DOES
+The agent runs in the background as you (not as administrator, unless you
+tick the optional "admin windows" box on the next page) and lets a phone you
+pair on your local network send mouse, keyboard and game-controller input,
+launch the games and apps you allow, and show status, volume and power
+controls. Paired phones authenticate with a token stored on this PC.
+
+DATA AND NETWORK ACCESS
+- The agent talks only to devices on your local network that you pair or
+  configure (for example your phone, or a TV you add). It does not include
+  analytics, advertising or telemetry.
+- Optional, OFF by default: "check GitHub for newer agent versions". If you
+  tick it, this PC contacts github.com and api.github.com (cached for 6
+  hours unless you explicitly request a fresh check). GitHub sees your IP address. To turn it off
+  later, set "allow_update_check" to false in
+  %ProgramData%\Couchside\config.json.
+- Optional, OFF by default, not offered in this wizard: in-app updates. Only
+  if you set "allow_app_update" to true in config.json can the app ask this PC
+  to update itself. The PC then downloads the newest published
+  CouchsideSetup.exe and its SHA256 checksum from github.com, and runs it
+  silently only if the checksum matches and the file carries a valid SignPath
+  Foundation signature. Otherwise nothing is run. Unsigned and test builds
+  never update this way. Windows still asks for administrator permission
+  (UAC) on this PC's screen.
+- During installation only: Setup downloads the ViGEmBus virtual-controller
+  driver through winget (Microsoft's package manager) from its publisher's
+  download location (pinned to version 1.22.0, checked against its published
+  SHA256), and, only if the controller library is missing, a pinned
+  "vgamepad" 0.1.0 package from files.pythonhosted.org, used only if its SHA256 matches.
+  These services see your IP address.
+
+CHANGES THIS INSTALLER MAKES
+- Installs the agent in %LOCALAPPDATA%\Couchside and keeps its settings and
+  pairing token in %ProgramData%\Couchside.
+- Asks for administrator permission (Windows UAC prompt) to add Windows
+  Firewall rules that allow the agent's port(s) on your local network, and to
+  create a scheduled task that starts the agent when you sign in.
+- Adds a tray icon that starts at sign-in.
+- Installs the third-party ViGEmBus driver (a virtual game controller) if it
+  is not already installed.
+- Optional, OFF by default: turn off hibernation (so Suspend sleeps). This is
+  NOT undone on uninstall; run "powercfg /hibernate on" to restore it.
+- Optional, OFF by default: silence the Xbox Game Bar "get an app" popup for
+  the controller's Guide button (changes ms-gamebar links for your account;
+  undone on uninstall).
+
+UNINSTALLING
+Use Settings > Apps > Couchside (agent). Uninstall removes the agent, its
+scheduled task, firewall rules, tray shortcut and the Game Bar change. It
+keeps %ProgramData%\Couchside (delete it to unpair phones), Python if it was
+installed, and the ViGEmBus driver (remove it from Apps if unwanted).

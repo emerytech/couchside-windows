@@ -15,8 +15,14 @@ on:
   repository_dispatch:
     types: [agent-changed]
 
+# Opens a pull request instead of pushing to main: the code that SignPath signs
+# (including build.ps1, which this job mirrors) must reach main through a
+# reviewed PR. Needs Settings -> Actions -> "Allow GitHub Actions to create and
+# approve pull requests". Note: PRs opened with GITHUB_TOKEN do not trigger
+# other workflows; re-run CI on the PR manually (or close/reopen it) before merging.
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: sync
@@ -26,19 +32,24 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
       - name: Pull the Windows agent files from emerytech/couchside@main
         run: |
           set -euo pipefail
-          BASE="https://raw.githubusercontent.com/emerytech/couchside/main"
+          UPSTREAM=$(git ls-remote https://github.com/emerytech/couchside.git refs/heads/main | cut -f1)
+          [[ "$UPSTREAM" =~ ^[0-9a-f]{40}$ ]]
+          BASE="https://raw.githubusercontent.com/emerytech/couchside/$UPSTREAM"
           # (dest in this repo) <- (path in the monorepo)
           curl -fsSL "$BASE/agent/win/couchsided-win.py"  -o couchsided-win.py
           curl -fsSL "$BASE/agent/win/couchside-tray.pyw" -o couchside-tray.pyw
           curl -fsSL "$BASE/agent/win/build.ps1"          -o build.ps1
+          curl -fsSL "$BASE/agent/win/build-requirements.txt" -o build-requirements.txt
           curl -fsSL "$BASE/agent/qr.py"                  -o qr.py
           curl -fsSL "$BASE/install.ps1"                  -o install.ps1
           # The brand icon. build.ps1 stamps it into couchside-agent.exe and the
@@ -49,15 +60,24 @@ jobs:
       - name: Syntax gate (never publish a broken sync)
         run: python3 -m py_compile couchsided-win.py qr.py
 
-      - name: Commit + push if anything changed
+      - name: Commit to a sync branch and open a PR if anything changed
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ -z "$(git status --porcelain)" ]; then
             echo "no changes — already in sync"
             exit 0
           fi
+          BR="sync/monorepo"   # one rolling bot branch/PR, rebuilt from main each run
           git config user.name "couchside-sync[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git checkout -B "$BR"
+          git add couchsided-win.py couchside-tray.pyw build.ps1 build-requirements.txt qr.py install.ps1 couchside.ico
           git commit -m "sync: pull Windows agent from emerytech/couchside@main"
-          git push
+          git push --force-with-lease origin "$BR"   # bot-owned branch only; main is never force-pushed
+          if ! gh pr view "$BR" --json state -q .state 2>/dev/null | grep -q OPEN; then
+            gh pr create --base main --head "$BR" \
+              --title "sync: pull Windows agent from emerytech/couchside@main" \
+              --body "Automated mirror of agent/win files from emerytech/couchside@main. Review before merging: build.ps1 and install.ps1 feed the SignPath-signed release."
+          fi

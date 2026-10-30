@@ -14,6 +14,11 @@
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0-dev"
 #endif
+; Numeric a.b.c.d form of MyAppVersion for the Windows version resource
+; ("0.4.12-win" -> "0.4.12.0"). Release CI passes /DMyAppNumVersion=...
+#ifndef MyAppNumVersion
+  #define MyAppNumVersion "0.0.0.0"
+#endif
 
 ; Brand icon, mirrored to the repo root by sync.yml from the monorepo's
 ; brand/couchside.ico. Optional at compile time: a checkout without it still
@@ -28,8 +33,22 @@ AppName=Couchside
 AppVersion={#MyAppVersion}
 AppPublisher=ETS3D LLC
 AppPublisherURL=https://couchside.tv
+; Version resource on CouchsideSetup.exe. SignPath Foundation requires every
+; signed binary to carry the project name as product name and the same product
+; version as the other binaries in the build (enforced by the artifact
+; configuration's metadata restrictions).
+VersionInfoVersion={#MyAppNumVersion}
+VersionInfoProductName=Couchside
+VersionInfoProductVersion={#MyAppNumVersion}
+VersionInfoProductTextVersion={#MyAppNumVersion}
+VersionInfoDescription=Couchside Windows agent setup
+VersionInfoCompany=ETS3D LLC
 DefaultDirName={localappdata}\Couchside\bootstrap
 DisableProgramGroupPage=yes
+; Shown before install: privacy notice + every system change and network
+; download, with how to opt out (SignPath Foundation terms: privacy policy
+; displayed during installation, system changes announced).
+InfoBeforeFile=before-install.txt
 ; The agent installs to the user profile and runs as a non-elevated scheduled
 ; task; install.ps1 self-elevates only for the firewall rule + task creation. So
 ; the wrapper itself needs no admin — keep it a per-user install.
@@ -59,6 +78,7 @@ UninstallDisplayIcon={localappdata}\Couchside\agent\couchside-agent.exe
 ; a hidden PowerShell child, so when it fails the log is the only breadcrumb —
 ; the failure message below points users at it.
 SetupLogging=yes
+UsePreviousTasks=yes
 
 [Files]
 ; The real install runs from PrepareToInstall (see [Code]) — the only hook that
@@ -107,6 +127,12 @@ Filename: "powershell.exe"; \
 ; admin app windows with the virtual mouse/keyboard (the command allowlist still
 ; holds — no arbitrary shell).
 Name: "elevated"; Description: "Let my phone control admin windows (games with anticheat, admin apps) — runs the agent as administrator"; GroupDescription: "Advanced (optional):"; Flags: unchecked
+; Optional system changes — all OFF by default. Unticked -> the wizard passes
+; -KeepHibernate / -KeepGameBar so install.ps1 leaves these settings alone.
+Name: "hibernate"; Description: "Turn off hibernation so the app's Suspend button sleeps instead of hibernating (powercfg /hibernate off; NOT undone on uninstall — run powercfg /hibernate on)"; GroupDescription: "Optional system changes:"; Flags: unchecked
+Name: "gamebar"; Description: "Silence the Xbox Game Bar ""get an app"" popup for the controller Guide button (changes ms-gamebar links for your account only; undone on uninstall)"; GroupDescription: "Optional system changes:"; Flags: unchecked
+; Optional network access — OFF by default. Ticked -> -EnableUpdateCheck.
+Name: "updatecheck"; Description: "Let the Couchside app ask this PC to check GitHub for newer agent versions (contacts github.com and api.github.com)"; GroupDescription: "Optional internet access:"; Flags: unchecked
 
 [Code]
 // Hand off to the real installer, and REPORT ITS EXIT CODE.
@@ -171,6 +197,15 @@ begin
     ExpandConstant('{tmp}\install.ps1') + '" -FromInstaller';
   if WizardIsTaskSelected('elevated') then
     Params := Params + ' -Elevated';
+  { Optional, default-OFF system changes / network access (see [Tasks]). }
+  if not WizardIsTaskSelected('hibernate') then
+    Params := Params + ' -KeepHibernate';
+  if not WizardIsTaskSelected('gamebar') then
+    Params := Params + ' -KeepGameBar';
+  if WizardIsTaskSelected('updatecheck') then
+    Params := Params + ' -EnableUpdateCheck'
+  else if not WizardSilent then
+    Params := Params + ' -DisableUpdateCheck';
   if not Exec('powershell.exe', Params,
        ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     Result := 'Setup could not start the Couchside installer script.' + #13#10 +

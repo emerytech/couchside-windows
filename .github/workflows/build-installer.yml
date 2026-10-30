@@ -12,6 +12,9 @@ on:
       - couchsided-win.py
       - qr.py
       - build.ps1
+      - build-requirements.txt
+      - tools/**
+      - .github/actions/**
       - install.ps1
       - installer/**
       - .github/workflows/build-installer.yml
@@ -23,8 +26,8 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
@@ -43,14 +46,17 @@ jobs:
           Write-Host "agent version: $v"
           "version=$v" >> $env:GITHUB_OUTPUT
 
-      - name: Install Inno Setup
-        run: choco install innosetup -y --no-progress
+      - name: Install verified Inno Setup
+        run: |
+          $iscc = & ./tools/install-inno.ps1
+          "COUCHSIDE_ISCC=$iscc" >> $env:GITHUB_ENV
 
       - name: Compile CouchsideSetup.exe
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+          & $env:COUCHSIDE_ISCC `
             /DMyAppVersion=${{ steps.ver.outputs.version }} `
             installer\couchside.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
 
       - name: Sanity — the installer exists
         shell: pwsh
@@ -59,7 +65,7 @@ jobs:
           Get-Item dist\CouchsideSetup.exe | Format-List Name, Length
 
       - name: Upload CouchsideSetup.exe
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: CouchsideSetup
           path: dist/CouchsideSetup.exe
@@ -68,7 +74,7 @@ jobs:
       # Also retain the exact inner executable for in-place preview testing.
       # This is a workflow artifact, not a release or installer behavior change.
       - name: Upload standalone preview agent
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: CouchsideAgentPreview
           path: dist/couchside-agent.exe
