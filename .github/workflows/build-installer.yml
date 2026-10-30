@@ -14,6 +14,7 @@ on:
       - build.ps1
       - build-requirements.txt
       - tools/**
+      - tests/test_installer_fresh.ps1
       - .github/actions/**
       - install.ps1
       - installer/**
@@ -95,6 +96,10 @@ jobs:
           }
           $lines | Set-Content -Encoding ascii dist/SHA256SUMS
           $lines
+
+      - name: Fresh install and silent upgrade on disposable runner
+        timeout-minutes: 12
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/test_installer_fresh.ps1 -Setup dist/CouchsideSetup.exe
 
       - name: Upload CouchsideSetup.exe
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
