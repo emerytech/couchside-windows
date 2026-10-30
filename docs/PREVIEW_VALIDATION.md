@@ -433,3 +433,29 @@ issue without making it a release blocker. Windows signing/distribution remains
 an open decision. Final combined artifacts await custom PAD work and source/
 version reconciliation. No main merge, release, store submission, public
 manifest change or subscriber email is authorized by this record.
+
+
+## 2026-10-30 full-chain candidate preparation (held)
+
+Couchside app2.9.80 candidates reserve iOS278, Play128 and Direct56 from
+monorepo source `e1ecf7e3143189e1a299c1884a4b01e472695210`. Its13CI checks
+passed; final mobile artifact/device smoke is still separate.
+
+The tested Windows0.4.14-win installer from successful build40523441131
+(source `5c96b4dfb238189fc215c3275230be3323338f3f`) is retained. Current
+agent/build/tray/QR/installer payload sources match that build, and canonical
+monorepo payload sources match this repository. The installer SHA-256 is
+`68eecd3015edfa88e709547c962792d0daafdc7fb47b2cfdc00b75d6386bd646`;
+agent SHA-256 is
+`dba4c5fbe53db1dad39cca4d6023c8733b8472b0313d2bd0f17ab8d4abd58674`.
+Both use GUI PE subsystem2. Neither has Authenticode signing; retain the owner's
+separate signing/distribution decision. No unnecessary installer rebuild,
+reinstall, firewall change or privilege change was performed.
+
+The owner explicitly deferred pressing Pass while another gameplay button is
+held. Release gameplay controls before ordinary handoff. An unsuccessful
+app-only experiment was removed from the candidate; this does not change the
+agent or erase prior ordinary handoff/control/installer acceptance.
+
+No merge, release, public download/manifest, store submission or subscriber
+email is authorized by this checkpoint.
