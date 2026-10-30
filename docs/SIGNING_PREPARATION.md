@@ -1,4 +1,4 @@
-# Windows signing preparation (private candidate, not a release)
+# Windows signing preparation (test candidate, not a release)
 
 Candidate: `0.4.15-rc1-win`. The public `0.4.14-win` assets are unchanged.
 The canonical agent/build/install sources must land in the product monorepo before
@@ -56,10 +56,10 @@ certify physical phone/controller behavior or a fresh OS install.
   denial, restart and failure recovery. Mock verification is not this acceptance test.
 - Fresh-OS installation without Python, interactive wizard/SmartScreen/UAC,
   and optional driver install/fallback checks.
-- Cleanup after a successful installer terminates the old agent: failed verification
-  downloads are cleaned now, but a normal successful upgrade can leave its private
-  temporary directory. Leftovers are never resumed or executed automatically.
-- Confirm signed workflow execution and artifact layout in GitHub only after owner
-  approval. Local YAML parsing is not hosted CI or SignPath verification.
+- Repeat cleanup with genuine signed artifacts. Independent supervision already
+  passed five Windows process tests and a real unsigned-installer test after the
+  initiating process was terminated. Leftovers are never resumed or executed.
+- Confirm signed workflow execution and artifact layout after SignPath approval.
+  Unsigned CI builds are separate test artifacts and do not certify signing.
 
 No licenses, public manifests, website policy or repository settings are changed.

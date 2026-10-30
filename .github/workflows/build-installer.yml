@@ -34,17 +34,40 @@ jobs:
       # See the action for why this is required and why it hard-fails.
       - uses: ./.github/actions/fetch-vigem
 
-      - name: Build couchside-agent.exe (PyInstaller)
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
-
       - name: Derive agent version from couchsided-win.py
         id: ver
         shell: pwsh
         run: |
           $m = Select-String -Path couchsided-win.py -Pattern 'VERSION\s*=\s*["'']([^"'']+)["'']' | Select-Object -First 1
-          $v = if ($m) { $m.Matches[0].Groups[1].Value } else { "0.0.0" }
-          Write-Host "agent version: $v"
-          "version=$v" >> $env:GITHUB_OUTPUT
+          $v = $m.Matches[0].Groups[1].Value
+          if ($v -notmatch '^(\d+)\.(\d+)\.(\d+)(?:-rc\d+)?-win$') { throw "VERSION $v is not a.b.c[-suffix]" }
+          $num = "$($matches[1]).$($matches[2]).$($matches[3]).0"
+          "version=$v"  >> $env:GITHUB_OUTPUT
+          "numver=$num" >> $env:GITHUB_OUTPUT
+          $t = ($num -split '\.') -join ', '
+          # PyInstaller version resource: ProductName "Couchside" and the same
+          # ProductVersion as the installer (SignPath metadata restrictions).
+          @"
+          VSVersionInfo(
+            ffi=FixedFileInfo(filevers=($t), prodvers=($t), mask=0x3f, flags=0x0,
+                              OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
+            kids=[
+              StringFileInfo([StringTable('040904B0', [
+                StringStruct('CompanyName', 'ETS3D LLC'),
+                StringStruct('FileDescription', 'Couchside Windows agent'),
+                StringStruct('FileVersion', '$num'),
+                StringStruct('InternalName', 'couchside-agent'),
+                StringStruct('LegalCopyright', 'Copyright (c) 2026 Taylor Emery (ETS3D LLC). MIT License.'),
+                StringStruct('OriginalFilename', 'couchside-agent.exe'),
+                StringStruct('ProductName', 'Couchside'),
+                StringStruct('ProductVersion', '$num')])]),
+              VarFileInfo([VarStruct('Translation', [1033, 1200])])
+            ]
+          )
+          "@ | Set-Content -Encoding utf8 -Path (Join-Path $env:RUNNER_TEMP 'version_info.txt')
+
+      - name: Build couchside-agent.exe (PyInstaller)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -VersionFile "$env:RUNNER_TEMP\version_info.txt"
 
       - name: Install verified Inno Setup
         run: |
@@ -55,20 +78,31 @@ jobs:
         run: |
           & $env:COUCHSIDE_ISCC `
             /DMyAppVersion=${{ steps.ver.outputs.version }} `
+            /DMyAppNumVersion=${{ steps.ver.outputs.numver }} `
             installer\couchside.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
 
-      - name: Sanity — the installer exists
+      - name: Verify unsigned candidate metadata and checksums
         shell: pwsh
         run: |
-          if (-not (Test-Path dist\CouchsideSetup.exe)) { throw "CouchsideSetup.exe was not produced" }
-          Get-Item dist\CouchsideSetup.exe | Format-List Name, Length
+          $lines = foreach ($file in @('dist/couchside-agent.exe', 'dist/CouchsideSetup.exe')) {
+            $info = (Get-Item $file).VersionInfo
+            if ($info.ProductName.Trim() -ne 'Couchside' -or $info.ProductVersion.Trim() -ne '${{ steps.ver.outputs.numver }}') {
+              throw "Candidate metadata mismatch: $file"
+            }
+            if ((Get-AuthenticodeSignature $file).Status -ne 'NotSigned') { throw "Preview unexpectedly signed: $file" }
+            ((Get-FileHash -Algorithm SHA256 $file).Hash.ToLower() + '  ' + (Split-Path $file -Leaf))
+          }
+          $lines | Set-Content -Encoding ascii dist/SHA256SUMS
+          $lines
 
       - name: Upload CouchsideSetup.exe
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: CouchsideSetup
-          path: dist/CouchsideSetup.exe
+          path: |
+            dist/CouchsideSetup.exe
+            dist/SHA256SUMS
           if-no-files-found: error
 
       # Also retain the exact inner executable for in-place preview testing.
