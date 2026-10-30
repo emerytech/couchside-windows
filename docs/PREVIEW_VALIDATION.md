@@ -459,3 +459,12 @@ agent or erase prior ordinary handoff/control/installer acceptance.
 
 No merge, release, public download/manifest, store submission or subscriber
 email is authorized by this checkpoint.
+
+## Owner signing decision — 2026-10-30
+
+Keep the existing Windows signing approach for this release. The owner explicitly
+deferred new Authenticode/SignPath work to a future release; it is not a release
+blocker. Retain the exact tested 0.4.14-win installer/executable and existing
+agent-manifest integrity signing. Do not rebuild or describe these binaries as
+Authenticode-signed. This supersedes earlier pending-signing-decision notes;
+publication, main merges, store submissions and subscriber emails remain held.
