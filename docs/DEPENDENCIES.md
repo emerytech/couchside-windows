@@ -20,7 +20,8 @@ and SHA-256 sums beside every reviewed portable candidate.
 
 No installer, driver, game assets, private key or SignPath credential is included
 in this source repository. The input-only client never creates a ViGEm device;
-this does not mean the full agent's gamepad features are driver-free. Optional
-mobile QR encoder is not shipped in this snapshot. The canonical Windows release
+this does not mean the full agent's gamepad features are driver-free. The vendored `qr.py` is a Python port of Kazuhiko Arase's qrcode-generator; preserve the included MIT attribution. The canonical Windows release
 repository's installer/build chain must be reviewed, not inferred from this client
 snapshot. No exact shipped-binary provenance is claimed before that build exists.
+
+ViGEmClient build input: vgamepad 0.1.0 sdist SHA-256 `57f6bd01aec0c172947517fb782d150ef9b285f7f4d524c317374fa5c24a89de`; extracted x64 DLL SHA-256 `2bf0cb1d809039573c922737d298a1653d4dbc61408060ff45a9bcfde82e97d2`. Both are verified by the build action. The optional driver installer is constrained to the winget 1.22.0 manifest; winget enforces its package digest. The review inventory records the actual DLL and built files.
