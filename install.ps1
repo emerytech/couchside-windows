@@ -83,6 +83,36 @@ $ConfigPath = Join-Path $DataDir 'config.json'
 $FwRule     = 'Couchside Agent'
 $TrayName   = 'Couchside Tray'
 $StartupLnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Couchside Tray.lnk'
+# BEGIN installer port helpers
+function Resolve-InstallerPort {
+    param([int]$RequestedPort, [bool]$ExplicitPort, [string]$Path)
+    $effective = $RequestedPort
+    if (-not $ExplicitPort -and (Test-Path $Path)) {
+        $saved = $null
+        try { $saved = (Get-Content $Path -Raw -Encoding UTF8 | ConvertFrom-Json).port } catch { }
+        if ($null -ne $saved) {
+            if ($saved -isnot [int] -and $saved -isnot [long]) { throw 'Saved agent port must be an integer from 1 through 65534.' }
+            $effective = $saved
+        }
+    }
+    if ($effective -lt 1 -or $effective -gt 65534) { throw 'Agent port must be from 1 through 65534 (HTTP plus HTTPS).' }
+    return [int]$effective
+}
+
+function Save-ExplicitInstallerPort {
+    param([int]$RequestedPort, [string]$Path)
+    $effective = Resolve-InstallerPort -RequestedPort $RequestedPort -ExplicitPort $true -Path $Path
+    # Read the latest config after stopping the agent; preserve every other field.
+    $saved = Get-Content $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($saved.port -ne $effective) {
+        $saved | Add-Member -MemberType NoteProperty -Name port -Value $effective -Force
+        [IO.File]::WriteAllText($Path, ($saved | ConvertTo-Json -Depth 100) + "`n")
+        Write-Host "Updated configured port to $effective. Other settings retained."
+    }
+}
+# END installer port helpers
+$PortWasSpecified = $PSBoundParameters.ContainsKey('Port')
+if (-not $Uninstall) { $Port = Resolve-InstallerPort -RequestedPort $Port -ExplicitPort $PortWasSpecified -Path $ConfigPath }
 
 function Test-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -104,7 +134,7 @@ if (-not (Test-Admin)) {
     if ($Elevated)       { $fwd += '-Elevated' }
     if ($NoElevated)     { $fwd += '-NoElevated' }
     if ($FromInstaller)  { $fwd += '-FromInstaller' }
-    $fwd += "-Port $Port"
+    if ($PortWasSpecified) { $fwd += "-Port $Port" }
     if ($PSBoundParameters.ContainsKey('Ref')) { $fwd += "-Ref $Ref" }
     # A human running this directly wants -NoExit so the elevated window stays up to
     # read. The Inno installer wants the opposite: no leftover window, AND the outer
@@ -139,17 +169,123 @@ if (-not (Test-Admin)) {
             # when it is non-zero. Before that it ran from a [Run] entry, which
             # never inspects exit codes -- a failed install still showed "Setup
             # completed successfully". So do not swallow a failure here.
-            $child = Start-Process powershell -Verb RunAs -ArgumentList $a -Wait -PassThru
-            exit $child.ExitCode
+            # Start-Process -Wait includes every descendant, including the
+            # pairing browser. Wait on the actual installer process instead.
+            $child = Start-Process powershell -Verb RunAs -ArgumentList $a -PassThru
+            $null = $child.Handle # retain a handle even if the elevated child exits immediately
+            $child.WaitForExit()
+            $childExit = $child.ExitCode
+            if ($null -eq $childExit) { throw 'Elevated installer did not provide an exit code; refusing to report success.' }
+            exit $childExit
+            # END elevated installer wait
         }
         Start-Process powershell -Verb RunAs -ArgumentList $a
     }
-    catch { throw 'Elevation was declined. Re-run from an elevated PowerShell (Run as administrator).' }
+    catch { throw "Could not complete elevated installation: $_ Re-run from an elevated PowerShell if necessary." }
     return
 }
 
 # --- shared helpers ----------------------------------------------------------
+# BEGIN firewall helpers
+function Invoke-InstallerWorker {
+    param([string]$Code, [string]$Label, [int]$TimeoutSeconds = 45)
+    # A separate process bounds COM/CIM provider hangs. No shell, script file,
+    # profile, network download, or external child process is used by this worker.
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $Code = '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);' + $Code
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Code))
+    $info.Arguments = "-NoProfile -NonInteractive -EncodedCommand $encoded"
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $info.StandardErrorEncoding = [Text.Encoding]::UTF8
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $info
+    try {
+        if (-not $process.Start()) { throw "$Label could not start." }
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $process.Kill()
+            if (-not $process.WaitForExit(5000)) { throw "$Label timed out and its worker could not be stopped." }
+            throw "$Label timed out after $TimeoutSeconds seconds. Check Windows Firewall and retry."
+        }
+        $output = $stdout.GetAwaiter().GetResult()
+        $errorText = $stderr.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { throw "$Label failed (exit $($process.ExitCode)): $errorText" }
+        if ($output.Trim()) { Write-Host $output.Trim() }
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Set-CouchsideFirewall {
+    param([switch]$RemoveOnly)
+    if ($NoFirewall -and -not $RemoveOnly) { return }
+    $agentProgram = if ($usePython) { $pyPath } else { Join-Path $InstallDir 'couchside-agent.exe' }
+    # Base64 JSON transports values as data, never interpolated PowerShell code.
+    $data = @{port=$Port; program=$agentProgram; removeOnly=[bool]$RemoveOnly} | ConvertTo-Json -Compress
+    $data64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($data))
+    $worker = @'
+$ErrorActionPreference = 'Stop'
+try {
+    $settings = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__SETTINGS__')) | ConvertFrom-Json
+    $Port = [int]$settings.port
+    if (-not $settings.removeOnly -and ($Port -lt 1 -or $Port -gt 65534)) { throw 'Agent port must be between 1 and 65534 for HTTP + HTTPS.' }
+    $policy = New-Object -ComObject HNetCfg.FwPolicy2
+    # The NetSecurity CIM bulk-delete path can stall on legacy duplicate rules.
+    # Use Windows' Firewall COM collection instead, matching only our exact names.
+    foreach ($name in @('Couchside Agent','Couchside Agent HTTPS','Couchside Agent Discovery')) {
+        $remaining = @($policy.Rules | Where-Object { $_.Name -eq $name }).Count
+        $maxAttempts = $remaining
+        $attempts = 0
+        while ($remaining -gt 0) {
+            if ($attempts -ge $maxAttempts) { throw "Removal limit reached for firewall rule '$name'. Check Group Policy or concurrent policy changes." }
+            $attempts++
+            try { $policy.Rules.Remove($name) }
+            catch { throw "Cannot remove firewall rule '$name'. Check permissions or Group Policy: $_" }
+            $after = @($policy.Rules | Where-Object { $_.Name -eq $name }).Count
+            if ($after -ge $remaining) { throw "Firewall rule '$name' is still present after removal. Check permissions or Group Policy." }
+            $remaining = $after
+        }
+    }
+    if (-not $settings.removeOnly) {
+        # Offline machines can throw instead of returning an empty collection.
+        # Only this discovery call falls back; rule-creation errors stay fatal.
+        try { $active = @(Get-NetConnectionProfile -ErrorAction Stop | Select-Object -ExpandProperty NetworkCategory) }
+        catch { $active = @() }
+        $fwProfiles = @('Private')
+        if ($active -contains 'Public') { $fwProfiles += 'Public' }
+        if ($active -contains 'DomainAuthenticated') { $fwProfiles += 'Domain' }
+        $profileArg = ($fwProfiles | Select-Object -Unique) -join ','
+        New-NetFirewallRule -DisplayName 'Couchside Agent' -Direction Inbound -Action Allow `
+            -Protocol TCP -LocalPort $Port -Profile $profileArg -ErrorAction Stop | Out-Null
+        New-NetFirewallRule -DisplayName 'Couchside Agent HTTPS' -Direction Inbound -Action Allow `
+            -Protocol TCP -LocalPort ($Port + 1) -RemoteAddress LocalSubnet -Profile $profileArg -ErrorAction Stop | Out-Null
+        New-NetFirewallRule -DisplayName 'Couchside Agent Discovery' -Direction Inbound -Action Allow `
+            -Program $settings.program -Protocol UDP -LocalPort $Port `
+            -RemoteAddress LocalSubnet -Profile $profileArg -ErrorAction Stop | Out-Null
+        Write-Output "Firewall: TCP $Port; local-subnet HTTPS + discovery; profiles $profileArg."
+    }
+    exit 0
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+'@
+    Invoke-InstallerWorker -Code $worker.Replace('__SETTINGS__',$data64) -Label 'Couchside firewall configuration'
+}
+# END firewall helpers
+
 function Stop-AgentTask {
+    # Do not stop the working agent until firewall setup has succeeded.
+    if (-not $Uninstall) {
+        try { Set-CouchsideFirewall }
+        catch { throw "Firewall setup failed before stopping the existing agent: $_" }
+    }
     # Stop-ScheduledTask kills a running instance; Unregister does NOT, so an
     # upgrade must stop first or copying over the running files/exe conflicts.
     #
@@ -182,9 +318,8 @@ function Uninstall-Couchside {
     Write-Host 'Uninstalling Couchside agent...'
     Stop-AgentTask
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-    Remove-NetFirewallRule -DisplayName "$FwRule HTTPS" -ErrorAction SilentlyContinue
-    Remove-NetFirewallRule -DisplayName "$FwRule Discovery" -ErrorAction SilentlyContinue
-    Remove-NetFirewallRule -DisplayName $FwRule -ErrorAction SilentlyContinue
+    try { Set-CouchsideFirewall -RemoveOnly }
+    catch { Write-Warning "Could not remove Couchside firewall rules: $_ Agent cleanup will continue; these rules may need manual removal." -WarningAction Continue }
     # Tray widget: kill the running icon + remove its Startup shortcut.
     Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like '*couchside-tray.pyw*' } |
@@ -334,9 +469,10 @@ $localTray = Find-Local @('couchside-tray.pyw','agent\win\couchside-tray.pyw')
 $localDll = Find-Local @('ViGEmClient.dll','agent\win\ViGEmClient.dll')
 
 if ($localExe) {
+    # Resolve the firewall program before the pre-stop configuration check.
+    $usePython = $false
     Stop-AgentTask
     # Prebuilt exe: no Python needed.
-    $usePython = $false
     Copy-Item $localExe (Join-Path $InstallDir 'couchside-agent.exe') -Force
     Write-Host 'Using local couchside-agent.exe'
     if ($localQr)  { Copy-Item $localQr  (Join-Path $InstallDir 'qr.py') -Force }
@@ -553,10 +689,7 @@ if (-not (Test-Path $ConfigPath)) {
     Write-Host "Created config: $ConfigPath"
 } else {
     Write-Host "Kept existing config: $ConfigPath"
-    try {
-        $cfgPort = (Get-Content $ConfigPath -Raw | ConvertFrom-Json).port
-        if ($cfgPort -is [int] -and $cfgPort -ge 1 -and $cfgPort -le 65535) { $Port = $cfgPort }
-    } catch { }
+    if ($PortWasSpecified) { Save-ExplicitInstallerPort -RequestedPort $Port -Path $ConfigPath }
 }
 
 # --- 5. hibernate off so SetSuspendState means SLEEP, not hibernate ----------
@@ -565,38 +698,7 @@ if (-not $KeepHibernate) {
     Write-Host 'Disabled hibernation (so Suspend sleeps to RAM; -KeepHibernate to skip).'
 }
 
-# --- 6. firewall: open for the profile(s) this box is actually on ------------
-# Windows often misclassifies a home LAN as "Public"; a Private-only rule then
-# silently blocks the phone (the #1 pairing failure). So open Private always,
-# and add Public/Domain only when the active network is that category - a truly
-# private box stays tight, a misclassified one still pairs.
-if (-not $NoFirewall) {
-    Remove-NetFirewallRule -DisplayName $FwRule -ErrorAction SilentlyContinue
-    $active = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty NetworkCategory)
-    $fwProfiles = @('Private')
-    if ($active -contains 'Public') { $fwProfiles += 'Public' }
-    if ($active -contains 'DomainAuthenticated') { $fwProfiles += 'Domain' }
-    $profileArg = ($fwProfiles | Select-Object -Unique) -join ','
-    New-NetFirewallRule -DisplayName $FwRule -Direction Inbound -Action Allow `
-        -Protocol TCP -LocalPort $Port -Profile $profileArg | Out-Null
-    Remove-NetFirewallRule -DisplayName "$FwRule HTTPS" -ErrorAction SilentlyContinue
-    New-NetFirewallRule -DisplayName "$FwRule HTTPS" -Direction Inbound -Action Allow `
-        -Protocol TCP -LocalPort ($Port + 1) -RemoteAddress LocalSubnet -Profile $profileArg | Out-Null
-    # Install before first launch to avoid Windows' broad app-access prompt.
-    # Discovery only needs this program, the configured port and the local subnet.
-    $agentProgram = if ($usePython) { $pyPath } else { Join-Path $InstallDir 'couchside-agent.exe' }
-    Remove-NetFirewallRule -DisplayName "$FwRule Discovery" -ErrorAction SilentlyContinue
-    New-NetFirewallRule -DisplayName "$FwRule Discovery" -Direction Inbound -Action Allow `
-        -Program $agentProgram -Protocol UDP -LocalPort $Port `
-        -RemoteAddress LocalSubnet -Profile $profileArg | Out-Null
-    Write-Host "Firewall: allowed TCP $Port for the $profileArg profile(s)."
-    Write-Host "Discovery: allowed local-subnet UDP $Port for the agent only."
-    if ($fwProfiles -contains 'Public') {
-        Write-Host "  (This network is classed Public, so the port is open there too. If this"
-        Write-Host "   box ever roams to untrusted Wi-Fi, restrict the '$FwRule' rule to Private.)"
-    }
-}
+# Firewall rules are configured by Stop-AgentTask before stopping the old agent.
 
 # --- 7. scheduled task: at logon, current user, interactive, non-elevated ----
 # No --port argument: the agent reads the port from config.json, so a config
