@@ -92,3 +92,7 @@ If HTTPS initialization fails, existing HTTP control remains usable but
 
 Regression checks: `python tests/test_https_upload.py`, plus `tests/test_win_*.py`.
 No production release is implied by this preview branch.
+
+## Code signing policy
+
+Production signing is not activated. See [proposed policy](docs/CODE_SIGNING_POLICY.md) and [dependency review](docs/DEPENDENCIES.md). Signed updater attestations and packaging are under review; no Foundation approval is claimed.

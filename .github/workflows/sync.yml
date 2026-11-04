@@ -1,6 +1,7 @@
 name: Sync agent from monorepo
 
-# One-way mirror: pull the Windows agent files from the public Couchside
+# Manual review-only sync proposal (automatic direct pushes disabled).
+# Historical workflow: One-way mirror: pull the Windows agent files from the public Couchside
 # product monorepo (emerytech/couchside, the source of truth) into this repo, so
 # the open-source Windows agent stays current without hand-copying. The monorepo
 # is public, so this needs no cross-repo token — it fetches raw files and commits
@@ -9,14 +10,10 @@ name: Sync agent from monorepo
 # an instant sync (optional, needs a PAT on the monorepo side).
 
 on:
-  schedule:
-    - cron: "17 8 * * *"
   workflow_dispatch:
-  repository_dispatch:
-    types: [agent-changed]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: sync
@@ -34,7 +31,9 @@ jobs:
       - name: Pull the Windows agent files from emerytech/couchside@main
         run: |
           set -euo pipefail
-          BASE="https://raw.githubusercontent.com/emerytech/couchside/main"
+          SHA=$(git ls-remote https://github.com/emerytech/couchside.git refs/heads/main | cut -f1)
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          BASE="https://raw.githubusercontent.com/emerytech/couchside/$SHA"
           # (dest in this repo) <- (path in the monorepo)
           curl -fsSL "$BASE/agent/win/couchsided-win.py"  -o couchsided-win.py
           curl -fsSL "$BASE/agent/win/couchside-tray.pyw" -o couchside-tray.pyw
@@ -49,15 +48,10 @@ jobs:
       - name: Syntax gate (never publish a broken sync)
         run: python3 -m py_compile couchsided-win.py qr.py
 
-      - name: Commit + push if anything changed
-        run: |
-          set -euo pipefail
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "no changes — already in sync"
-            exit 0
-          fi
-          git config user.name "couchside-sync[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "sync: pull Windows agent from emerytech/couchside@main"
-          git push
+      - name: Prepare patch for human review (never push to main)
+        run: git diff --binary > proposed-agent-sync.patch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proposed-agent-sync
+          path: proposed-agent-sync.patch
+          retention-days: 14
