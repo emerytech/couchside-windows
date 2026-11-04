@@ -33,6 +33,7 @@ authed action/launcher API must never hand LAN clients admin execution.
 """
 
 import argparse
+from functools import wraps
 from pathlib import Path
 import base64
 import ctypes
@@ -93,7 +94,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.15-win"
+VERSION = "0.4.15-rc1-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -305,9 +306,19 @@ CONFIG_PANEL = None
 CONFIG_CEC_BRIDGE = None  # optional {"host","port","token"}: forward TV ops to a Pi
 CONFIG_ROKU = None  # optional {"host","name"}: Roku (ECP) TV, no pairing needed
 # When true, the app may trigger a box-side agent update via POST
-# /api/update/apply. OFF BY DEFAULT: opt-in only on the box (config.json), never
-# by the app itself. See the Linux agent for the full rationale.
+# /api/update/apply. OFF BY DEFAULT: opt-in only on the box (config.json
+# "allow_app_update": true), never by the app itself. Even when on, the route
+# can only install the newest PUBLISHED emerytech/couchside-windows release's
+# CouchsideSetup.exe after its SHA256 and its SignPath Foundation Authenticode
+# signature both verify; it takes no URL, path or arguments from the request,
+# never downgrades, and is refused outright by unsigned/RC/Python builds.
 ALLOW_APP_UPDATE = False
+# When true, the box may query GitHub (github.com release asset + api.github.com)
+# for a newer agent release when the app calls /api/update/check. OFF BY
+# DEFAULT: opt-in via config.json "allow_update_check" (Setup wizard checkbox,
+# default unticked, or install.ps1 -EnableUpdateCheck). When off the agent makes
+# no update-check network requests and the route reports "disabled": true.
+ALLOW_UPDATE_CHECK = False
 # When true, the app may CREATE custom launchers over the network. OFF BY DEFAULT:
 # a launcher argv is run verbatim as the desktop user (real_launch -> Popen), so
 # remote creation is arbitrary user-level command exec for any bearer-token holder.
@@ -521,6 +532,7 @@ def load_config(path):
     """Load config.json into the module globals; fall back to defaults."""
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_CEC_BRIDGE, ALLOW_APP_UPDATE
+    global ALLOW_UPDATE_CHECK
     global CONFIG_ROKU, ALLOW_APP_LAUNCHERS
     # ABSOLUTE on purpose: every rewrite derives the temp-file directory from
     # os.path.dirname(CONFIG_PATH), and a relative path has no directory part.
@@ -532,6 +544,7 @@ def load_config(path):
             raw = json.load(f)
         if isinstance(raw, dict):
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
+            ALLOW_UPDATE_CHECK = bool(raw.get("allow_update_check", False))
             ALLOW_APP_LAUNCHERS = bool(raw.get("allow_app_launchers", False))
         units, actions, order, port, launchers, panel, cec_bridge, roku = \
             _parse_config(raw)
@@ -568,13 +581,54 @@ def load_config(path):
 # Update check (/api/update/check) + opt-in apply (/api/update/apply).
 # Mirrors the Linux agent (see couchsided.py for the privacy rationale): the
 # BOX does the cached GitHub read; the app reads the result over the LAN and
-# never touches the internet. Windows uses its own version marker
-# (agent-version-win.txt) and installer (install.ps1).
+# never touches the internet. Windows checks its own release repository. Apply installs the signed CouchsideSetup.exe from
+# the emerytech/couchside-windows release (verified; see update_apply).
 # ---------------------------------------------------------------------------
-_UPDATE_LATEST_VER_URL = \
-    "https://github.com/emerytech/couchside/releases/latest/download/agent-version-win.txt"
-_UPDATE_RELEASE_API = "https://api.github.com/repos/emerytech/couchside/releases/latest"
-_UPDATE_INSTALL_PS1 = "https://couchside.tv/install.ps1"
+# App-triggered apply: the signed installer from the couchside-windows repo's
+# latest PUBLISHED release (GitHub's /releases/latest skips drafts and
+# prereleases). Never `iwr ... | iex`: nothing runs unless it verifies.
+_UPDATE_WIN_RELEASE_API = \
+    "https://api.github.com/repos/emerytech/couchside-windows/releases/latest"
+_UPDATE_ASSET_PREFIX = \
+    "https://github.com/emerytech/couchside-windows/releases/download/"
+_UPDATE_SETUP_ASSET = "CouchsideSetup.exe"
+_UPDATE_SUM_ASSET = "CouchsideSetup.exe.sha256"
+# Hosts a release-asset download may be redirected to.
+_UPDATE_DL_HOSTS = ("github.com", "objects.githubusercontent.com",
+                    "release-assets.githubusercontent.com")
+_UPDATE_MAX_BYTES = 200 * 1024 * 1024
+# Authenticode signer (SignPath Foundation's certificate, used by many OSS
+# projects). A separately pinned project key binds the final installer digest
+# and release identity; PE metadata and a shared certificate are not project identity.
+_UPDATE_SIGNER_RE = re.compile(r'(^|,\s*)CN="?SignPath Foundation"?\s*(,|$)')
+_UPDATE_PRODUCT_NAME = "Couchside"
+_UPDATE_MANIFEST_ASSET = "CouchsideRelease.json"
+_UPDATE_MANIFEST_SIG_ASSET = "CouchsideRelease.json.sig"
+# Public release-verification key only. Private key never belongs in source/CI.
+_UPDATE_RELEASE_PUBLIC_KEY = "1b35e8a458c7dea979dc97df4d03b01e8d4509f8732459c2c19d3d998aae2b54"
+
+
+def _verify_release_manifest(raw, signature, tag, version, digest):
+    """Authenticate exact bytes before parsing; bind project/release/final asset.
+
+    This is additional to Authenticode, URL checks and monotonic stable versions.
+    No network-supplied key, environment override, or unsigned fallback.
+    """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    if not isinstance(raw, bytes) or len(raw) > 4096 or not isinstance(signature, bytes) or len(signature) > 128:
+        raise ValueError("invalid signed manifest size")
+    try:
+        sig = base64.b64decode(signature.strip(), validate=True)
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(_UPDATE_RELEASE_PUBLIC_KEY)).verify(sig, raw)
+        expected = {"schema": 1, "repository": "emerytech/couchside-windows",
+                    "tag": tag, "version": version, "asset": "CouchsideSetup.exe",
+                    "sha256": digest}
+        # Strict canonical bytes reject duplicate/unknown fields and ambiguity.
+        canonical = json.dumps(expected, sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n"
+        if not hmac.compare_digest(raw, canonical):
+            raise ValueError("release identity or installer digest mismatch")
+    except Exception as exc:
+        raise ValueError("Couchside release manifest verification failed") from exc
 _UPDATE_TTL_S = 6 * 3600
 _update_cache = {"at": 0.0, "data": None}
 _update_lock = threading.Lock()
@@ -584,8 +638,15 @@ def _http_text(url, timeout=8):
     req = urllib.request.Request(url, headers={
         "User-Agent": "couchside-agent/%s" % VERSION,
         "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read(1_000_000).decode("utf-8", "replace")
+    # Update metadata is pinned to this repository; no redirect is necessary.
+    if url != _UPDATE_WIN_RELEASE_API:
+        raise ValueError("unexpected update metadata URL")
+    opener = urllib.request.build_opener(_UpdateRedirectHandler(()))
+    with opener.open(req, timeout=timeout) as r:
+        body = r.read(1_000_001)
+        if len(body) > 1_000_000:
+            raise ValueError("update metadata too large")
+        return body.decode("utf-8")
 
 
 def _ver_tuple(s):
@@ -598,7 +659,13 @@ def _ver_tuple(s):
 
 def update_check(force=False):
     """Whether a newer signed Windows agent release exists. Cached 6h; never
-    raises (network failure -> available:false with an error string)."""
+    raises (network failure -> available:false with an error string).
+    Opt-in: with allow_update_check off, returns a "disabled" result without
+    touching the network."""
+    if not ALLOW_UPDATE_CHECK:
+        return {"available": False, "installed": VERSION, "latest": None,
+                "tag": None, "notes": None, "disabled": True,
+                "checked_at": int(time.time())}
     now = time.monotonic()
     with _update_lock:
         c = _update_cache
@@ -606,9 +673,14 @@ def update_check(force=False):
             return c["data"]
     installed = VERSION
     try:
-        latest = _http_text(_UPDATE_LATEST_VER_URL).strip().split()[0]
-        meta = json.loads(_http_text(_UPDATE_RELEASE_API))
-        data = {"available": _ver_tuple(latest) > _ver_tuple(installed),
+        meta = json.loads(_http_text(_UPDATE_WIN_RELEASE_API))
+        latest, _assets = _release_candidate(meta, require_assets=False)
+        installed_number = _release_version(installed)
+        # Preview builds may check versions, but can never apply an update.
+        if installed_number is None:
+            m = re.match(r"^(\d+)\.(\d+)\.(\d+)-", installed)
+            installed_number = tuple(map(int, m.groups())) if m else (0,)
+        data = {"available": _release_version(latest) > installed_number,
                 "installed": installed, "latest": latest,
                 "tag": meta.get("tag_name") or None,
                 "notes": (meta.get("body") or "").strip() or None,
@@ -630,23 +702,327 @@ def mock_update_check():
             "checked_at": int(time.time())}
 
 
+_UPDATE_LOG = os.path.join(os.environ.get("TEMP", os.getcwd()),
+                           "couchside-update.log")
+_apply_lock = threading.Lock()
+_apply_state = {"state": "idle"}     # idle | running | launched | failed
+_self_sig_cache = {}
+_MANUAL_UPDATE_HINT = ("Install the latest CouchsideSetup.exe yourself from "
+                       "https://github.com/emerytech/couchside-windows/releases")
+
+
+def _update_log(msg):
+    line = "%s %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
+    print("[update] " + msg, flush=True)
+    try:
+        with open(_UPDATE_LOG, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _windows_update_env(**values):
+    """Use inbox Windows PowerShell modules, not inherited PowerShell 7 paths.
+
+    Limit this to update subprocesses; do not change the agent or user's environment.
+    """
+    env = dict(os.environ, **values)
+    env["PSModulePath"] = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                                     "System32", "WindowsPowerShell", "v1.0", "Modules")
+    return env
+
+
+def _authenticode_info(path):
+    """Get-AuthenticodeSignature + version resource for `path`, via Windows
+    PowerShell by absolute path. The file path goes in through an environment
+    variable, never into the command text. Raises on any failure."""
+    ps_exe = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                          "System32", "WindowsPowerShell", "v1.0",
+                          "powershell.exe")
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$p=$env:COUCHSIDE_VERIFY_PATH;"
+        "$s=Get-AuthenticodeSignature -LiteralPath $p;"
+        "$v=(Get-Item -LiteralPath $p).VersionInfo;"
+        "$subj='';if($s.SignerCertificate){$subj=$s.SignerCertificate.Subject};"
+        "[pscustomobject]@{status=[string]$s.Status;subject=$subj;"
+        "timestamped=[bool]$s.TimeStamperCertificate;"
+        "product=([string]$v.ProductName).Trim();version=([string]$v.ProductVersion).Trim()}"
+        "|ConvertTo-Json -Compress")
+    env = _windows_update_env(COUCHSIDE_VERIFY_PATH=os.path.abspath(path))
+    r = subprocess.run([ps_exe, "-NoProfile", "-NonInteractive", "-Command",
+                        script], capture_output=True, text=True, timeout=90,
+                       env=env, creationflags=_RUN_FLAGS)
+    if r.returncode != 0:
+        raise RuntimeError("signature check failed: %s"
+                           % (r.stderr or r.stdout).strip()[:200])
+    return json.loads(r.stdout.strip())
+
+
+def _signpath_signed(info):
+    return (info.get("status") == "Valid"
+            and bool(_UPDATE_SIGNER_RE.search(info.get("subject") or ""))
+            and bool(info.get("timestamped")))
+
+
+def _self_update_blocker():
+    """None if THIS agent may self-update, else a user-facing reason. Only a
+    SignPath-signed couchside-agent.exe can: an unsigned/RC/dev build or a
+    Python-source install has no trusted signing identity to hold the update
+    to, so it refuses rather than install something it can't vouch for."""
+    if not IS_WINDOWS:
+        return "App-triggered updates are only available on Windows."
+    if _release_version(VERSION) is None:
+        return "Preview/development builds cannot apply updates. " + _MANUAL_UPDATE_HINT + "."
+    if not getattr(sys, "frozen", False):
+        return ("This agent runs from Python source, so app-triggered updates "
+                "are unavailable. Re-run install.ps1 to update.")
+    if "blocker" not in _self_sig_cache:
+        try:
+            info = _authenticode_info(sys.executable)
+            _self_sig_cache["blocker"] = None if (_signpath_signed(info) and
+                info.get("product") == _UPDATE_PRODUCT_NAME and
+                _numeric_version(info.get("version")) == _release_version(VERSION) + (0,)) else (
+                "This agent build is not signed by SignPath Foundation "
+                "(signature status: %s), e.g. a release candidate or "
+                "developer build, so app-triggered updates are refused. %s."
+                % (info.get("status") or "unknown", _MANUAL_UPDATE_HINT))
+        except Exception as e:
+            # Not cached: a transient PowerShell failure shouldn't stick.
+            return ("Could not verify this agent's own signature (%s); "
+                    "app-triggered update refused." % str(e)[:120])
+    return _self_sig_cache["blocker"]
+
+
+def _release_version(value):
+    """Only stable Windows release tags are installable (no RC/dev suffix)."""
+    match = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-win", value or "")
+    return tuple(map(int, match.groups())) if match else None
+
+
+def _numeric_version(value):
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)\.(\d+)", value or "")
+    return tuple(map(int, match.groups())) if match else None
+
+
+def _release_candidate(meta, require_assets=True):
+    if not isinstance(meta, dict) or meta.get("draft") is not False or meta.get("prerelease") is not False:
+        raise ValueError("latest release is not a published stable release")
+    tag = meta.get("tag_name", "")
+    latest = tag[1:] if isinstance(tag, str) and tag.startswith("v") else ""
+    if _release_version(latest) is None:
+        raise ValueError("invalid stable Windows release tag")
+    if not require_assets:
+        return latest, {}
+    assets = {}
+    for asset in meta.get("assets") or []:
+        name = asset.get("name")
+        if name not in (_UPDATE_SETUP_ASSET, _UPDATE_SUM_ASSET, _UPDATE_MANIFEST_ASSET, _UPDATE_MANIFEST_SIG_ASSET):
+            continue
+        expected = _UPDATE_ASSET_PREFIX + tag + "/" + name
+        if name in assets or asset.get("browser_download_url") != expected:
+            raise ValueError("duplicate or unexpected release asset URL")
+        assets[name] = expected
+    if len(assets) != 4:
+        raise ValueError("release lacks installer, checksum or project-signed manifest")
+    return latest, assets
+
+
+def _validate_update_url(url, hosts):
+    parsed = urlparse(url)
+    if (parsed.scheme != "https" or parsed.hostname not in hosts
+            or parsed.username is not None or parsed.password is not None
+            or parsed.port not in (None, 443) or parsed.fragment):
+        raise ValueError("untrusted update download URL")
+
+
+class _UpdateRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, hosts):
+        self.hosts = hosts
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Reject BEFORE urllib sends anything to the redirect destination.
+        _validate_update_url(newurl, self.hosts)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _fetch_asset(url, dest=None, limit=_UPDATE_MAX_BYTES):
+    """Bounded HTTPS downloads; validate every hop before following it."""
+    _validate_update_url(url, _UPDATE_DL_HOSTS)
+    req = urllib.request.Request(url, headers={"User-Agent": "couchside-agent/%s" % VERSION})
+    opener = urllib.request.build_opener(_UpdateRedirectHandler(_UPDATE_DL_HOSTS))
+    with opener.open(req, timeout=60) as r:
+        _validate_update_url(r.geturl(), _UPDATE_DL_HOSTS)
+        if dest is None:
+            body = r.read(limit + 1)
+            if len(body) > limit:
+                raise ValueError("download too large")
+            return body
+        h, total = hashlib.sha256(), 0
+        created = False
+        try:
+            with open(dest, "xb") as f:
+                created = True
+                while True:
+                    chunk = r.read(1 << 16)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > limit:
+                        raise ValueError("download too large")
+                    h.update(chunk)
+                    f.write(chunk)
+        except Exception:
+            # Never leave an incomplete executable available to a later attempt.
+            if created and os.path.isfile(dest):
+                os.unlink(dest)
+            raise
+        return h.hexdigest()
+
+
+_UPDATE_SUPERVISOR_PS = r'''
+$ErrorActionPreference = 'Stop'
+$stage = $env:COUCHSIDE_UPDATE_STAGE
+$setup = Join-Path $stage 'CouchsideSetup.exe'
+$result = 1
+try {
+    # Recheck the verified bytes immediately before launch. All paths are data,
+    # never PowerShell source, and this process retains the caller's privileges.
+    if ((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash -ne $env:COUCHSIDE_UPDATE_SHA256) {
+        throw 'Installer changed after verification'
+    }
+    $args = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
+              ('/LOG="' + $env:COUCHSIDE_UPDATE_SETUP_LOG + '"'))
+    $child = Start-Process -FilePath $setup -ArgumentList $args -PassThru
+    $null = $child.Handle
+    $child.WaitForExit()
+    $result = $child.ExitCode
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+} finally {
+    # Setup normally terminates the agent that requested the update. This
+    # independent supervisor survives that termination and waits for setup.
+    # Never recursively remove a staging tree or follow a reparse point.
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        try {
+            if (-not [IO.Directory]::Exists($stage)) { break }
+            if (([IO.File]::GetAttributes($stage) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { break }
+            if ([IO.File]::Exists($setup)) { [IO.File]::Delete($setup) }
+            [IO.Directory]::Delete($stage, $false)
+            break
+        } catch { Start-Sleep -Seconds 1 }
+    }
+}
+exit $result
+'''
+
+
+def _launch_update_supervisor(stage, digest):
+    ps = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
+                      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    env = _windows_update_env(COUCHSIDE_UPDATE_STAGE=stage,
+               COUCHSIDE_UPDATE_SHA256=digest,
+               COUCHSIDE_UPDATE_SETUP_LOG=_UPDATE_LOG + '.setup.txt')
+    command = base64.b64encode(_UPDATE_SUPERVISOR_PS.encode('utf-16le')).decode('ascii')
+    return subprocess.Popen([ps, '-NoProfile', '-NonInteractive', '-EncodedCommand', command],
+                            # PowerShell exits without executing its command under
+                            # DETACHED_PROCESS on Windows. NO_WINDOW still gives it
+                            # a working console environment without a visible window.
+                            env=env, creationflags=(0x08000000 | 0x00000200) if IS_WINDOWS else 0, close_fds=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+
+
+def _update_apply_worker():
+    """Download -> verify SHA256 -> verify Authenticode -> run silently.
+    Every failure stops before anything is executed (fail closed)."""
+    tmpdir = None
+    try:
+        meta = json.loads(_http_text(_UPDATE_WIN_RELEASE_API))
+        latest, assets = _release_candidate(meta)
+        tag = meta["tag_name"]
+        installed = _release_version(VERSION)
+        if installed is None or _release_version(latest) <= installed:
+            raise RuntimeError("no newer stable Windows release")
+        setup_url = assets[_UPDATE_SETUP_ASSET]
+        sum_url = assets[_UPDATE_SUM_ASSET]
+        sums = _fetch_asset(sum_url, limit=4096).decode("ascii", "replace")
+        match = re.fullmatch(r"([0-9A-Fa-f]{64})[ \t]+\*?CouchsideSetup\.exe\s*", sums)
+        if not match:
+            raise RuntimeError("invalid installer checksum file")
+        expected = match.group(1).lower()
+        raw = _fetch_asset(assets[_UPDATE_MANIFEST_ASSET], limit=4096)
+        signature = _fetch_asset(assets[_UPDATE_MANIFEST_SIG_ASSET], limit=128)
+        _verify_release_manifest(raw, signature, tag, latest, expected)
+        tmpdir = tempfile.mkdtemp(prefix="couchside-update-")
+        setup = os.path.join(tmpdir, _UPDATE_SETUP_ASSET)
+        _update_log("downloading %s %s" % (tag, _UPDATE_SETUP_ASSET))
+        got = _fetch_asset(setup_url, dest=setup)
+        if not hmac.compare_digest(got, expected):
+            raise RuntimeError("SHA256 mismatch (expected %s, got %s)"
+                               % (expected, got))
+        info = _authenticode_info(setup)
+        if not _signpath_signed(info):
+            raise RuntimeError("installer signature not trusted (status %s, "
+                               "signer %r, timestamped %s)"
+                               % (info.get("status"), info.get("subject"),
+                                  info.get("timestamped")))
+        if info.get("product") != _UPDATE_PRODUCT_NAME or \
+                _numeric_version(info.get("version")) != _release_version(latest) + (0,):
+            raise RuntimeError("installer metadata mismatch (product %r, "
+                               "version %r, release %s)"
+                               % (info.get("product"), info.get("version"), tag))
+        _update_log("verified %s (sha256 %s, signer %s); running silently"
+                    % (tag, got, info.get("subject")))
+        # Inno Setup silent upgrade. Previously chosen [Tasks] are reused
+        # (UsePreviousTasks), so optional changes stay as the user set them.
+        # install.ps1 still asks for UAC on this PC's screen.
+        child = _launch_update_supervisor(tmpdir, got)
+        with _apply_lock:
+            _apply_state.clear()
+            _apply_state.update(state="launched", version=latest,
+                                at=int(time.time()))
+        # The supervisor, not the replaceable agent, owns post-install cleanup.
+        exit_code = child.wait()
+        if exit_code != 0:
+            raise RuntimeError("installer exited with code %s" % exit_code)
+        with _apply_lock:
+            _apply_state.update(state="completed", at=int(time.time()))
+    except Exception as e:
+        _update_log("update refused/failed: %s" % e)
+        with _apply_lock:
+            _apply_state.clear()
+            _apply_state.update(state="failed", error=str(e)[:300],
+                                at=int(time.time()))
+    finally:
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def update_apply():
-    """Spawn the PowerShell installer DETACHED so it survives the agent's own
-    restart, and return immediately. Caller must have checked ALLOW_APP_UPDATE.
-    install.ps1 verifies the release before installing."""
-    log = os.path.join(os.environ.get("TEMP", os.getcwd()),
-                       "couchside-update.log")
-    cmd = ("powershell -NoProfile -ExecutionPolicy Bypass -Command "
-           "\"try { iwr -UseBasicParsing '%s' | iex } catch { $_ | Out-String }\" "
-           "> \"%s\" 2>&1" % (_UPDATE_INSTALL_PS1, log))
-    DETACHED_PROCESS = 0x00000008
-    CREATE_NEW_PROCESS_GROUP = 0x00000200
-    subprocess.Popen(cmd, shell=True,
-                     creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, close_fds=True)
-    print("[update] app-triggered update started (log: %s)" % log, flush=True)
-    return {"started": True, "log": log}
+    """Start a verified update in the background. Returns (http_code, body).
+    Caller must have checked ALLOW_APP_UPDATE. Takes nothing from the request:
+    the only possible action is installing the newest published, verified
+    CouchsideSetup.exe."""
+    if not ALLOW_APP_UPDATE:
+        return 403, {"ok": False, "started": False, "error": "app-triggered updates disabled"}
+    blocker = _self_update_blocker()
+    if blocker:
+        return 409, {"ok": False, "started": False, "error": blocker}
+    with _apply_lock:
+        if _apply_state.get("state") in ("running", "launched", "completed"):
+            return 409, {"ok": False, "started": False,
+                         "error": "an update is already in progress"}
+        _apply_state.clear()
+        _apply_state.update(state="running", at=int(time.time()))
+    threading.Thread(target=_update_apply_worker, daemon=True,
+                     name="update-apply").start()
+    return 202, {"ok": True, "started": True, "log": _UPDATE_LOG}
+
+
+def update_apply_state():
+    with _apply_lock:
+        return dict(_apply_state)
 
 
 # ---------------------------------------------------------------------------
@@ -994,7 +1370,7 @@ def set_caps(mock):
         # WIN/ALT-TAB cluster on a ViGEm box), not the Plasma desktop-nav cap.
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
-                 "launchers")}
+                 "launchers", "input_only")}
         CAPS["screensaver"] = False
         CAPS["couchmode"] = False
         CAPS["desktop"] = False
@@ -1004,6 +1380,8 @@ def set_caps(mock):
         # ViGEmBus connect, not just the DLL loading, or a driver-less box reports
         # gamepad:true and the app opens a pad it can never create (see vigem_ready).
         "gamepad": safe(vigem_ready),
+        # Protocol support, independent of ViGEm; Win32 injection can still be paused.
+        "input_only": True,
         "steam": _steam_root() is not None,
         "launchers": safe(_any_launcher_source),
         "media": safe(smtc_available),
@@ -2026,7 +2404,6 @@ def list_launchers():
     ]
     return (customs + discover_steam_games() + discover_epic_games()
             + discover_gog_games() + discover_xbox_games())
-
 
 
 def _steam_uninstall_ready(appid):
@@ -3813,8 +4190,8 @@ def _sniff_image(data):
 # (non-Windows real mode) screen_info() returns None so /api/screen 404s and the
 # app hides the card entirely.
 #
-# NEEDS ON-WINDOWS TESTING: the GDI structs + the BMP->JPEG WIC re-encode are
-# written to the documented APIs but unverified on a real box.
+# Native GDI + JPEG capture verified from an interactive Windows user session.
+# Secure/session-0 capture remains unavailable by design.
 # ---------------------------------------------------------------------------
 
 SCREEN_WIDTH = 960                 # downscale target width
@@ -3881,14 +4258,73 @@ def set_screen(mock):
         _SCREEN = None
 
 
+def _physical_desktop(fn):
+    """Use physical pixels on this capture thread; restore its prior DPI context.
+
+    A DPI-virtualized GetSystemMetrics result can be smaller than the pixels
+    returned by GDI, cropping high-DPI desktops. Never change process DPI state.
+    """
+    @wraps(fn)
+    def call(*args, **kwargs):
+        previous = None
+        setter = None
+        if IS_WINDOWS:
+            try:
+                setter = _user32.SetThreadDpiAwarenessContext
+                setter.argtypes = [ctypes.c_void_p]
+                setter.restype = ctypes.c_void_p
+                previous = setter(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+            except (AttributeError, OSError):
+                pass
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            if previous and setter:
+                setter(previous)
+    return call
+
+
+@_physical_desktop
+def _screen_pointer():
+    """Optional cursor coordinates within the virtual-desktop preview, 0..1.
+
+    Images from GDI omit the hardware cursor. A separate bounded position lets
+    a desktop viewer draw it without changing existing screenshot bytes.
+    """
+    if not IS_WINDOWS or _user32 is None:
+        return None
+    try:
+        point = (ctypes.c_long * 2)()
+        _user32.GetCursorPos.argtypes = [ctypes.c_void_p]
+        _user32.GetCursorPos.restype = ctypes.c_int
+        if not _user32.GetCursorPos(ctypes.byref(point)):
+            return None
+        _user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+        _user32.GetSystemMetrics.restype = ctypes.c_int
+        x, y, width, height = (_user32.GetSystemMetrics(k) for k in
+                              (SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+                               SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN))
+        if width <= 1 or height <= 1:
+            return None
+        return {"x": max(0.0, min(1.0, (point[0] - x) / (width - 1))),
+                "y": max(0.0, min(1.0, (point[1] - y) / (height - 1)))}
+    except Exception:
+        return None
+
+
 def screen_info():
     """{available, session, backends, formats} or None when no capture path."""
     if _SCREEN is None:
         return None
-    return {"available": True, "session": _SCREEN["session"],
+    info = {"available": True, "session": _SCREEN["session"],
             "backends": _SCREEN["backends"], "formats": ["image/jpeg"]}
+    pointer = _screen_pointer()
+    if pointer is not None:
+        info["pointer"] = pointer
+    return info
 
 
+@_physical_desktop
 def _capture_bmp():
     """Grab the whole virtual screen, downscale to SCREEN_WIDTH via StretchBlt,
     and return (bmp_bytes, w, h) or None on any failure (secure desktop, no
@@ -4015,7 +4451,9 @@ def _bmp_to_jpeg(bmp):
         env = dict(os.environ)
         env["CS_BMP_IN"] = bmp_path
         env["CS_JPG_OUT"] = jpg_path
-        out = _run_powershell(_SCREEN_JPEG_PS, SCREEN_CAPTURE_TIMEOUT_S, env=env)
+        # PowerShell 5.1 -Command - needs a blank line to submit the final
+        # multiline try/catch block. Without it stdin EOF exits 0 with no JPEG.
+        out = _run_powershell(_SCREEN_JPEG_PS + "\n", SCREEN_CAPTURE_TIMEOUT_S, env=env)
         if not out or out.strip().lower() != "ok":
             return None
         with open(jpg_path, "rb") as f:
@@ -5216,36 +5654,67 @@ def _release_devices(entry):
 
 
 def _make_holder(entry, mock):
-    """Give `entry` the gamepad device and mark it holder, then send hello.
-    A session only ever receives hello on becoming the holder (waiters get
-    'waiting' instead), so hello IS the "you have control now" signal. Returns
-    False (and closes the session) if ViGEm fails. Mouse/keyboard are
-    pre-created for frame-path parity with the Linux agent (both are instant to
-    construct on Windows; a create failure is non-fatal — the lazy path in
-    _gamepad_message retries on first use)."""
+    # Serialize activation with input emission and ownership changes. A late
+    # activation cannot revive a superseded session.
+    with GAMEPAD_LOCK:
+        if GAMEPAD_HOLDER is not entry:
+            return False
+        return _activate_holder(entry, mock)
+
+
+def _activate_holder(entry, mock):
+    """Grant this session's fixed input mode, then acknowledge with hello.
+
+    Input-only clients share ownership and lifecycle with ordinary pads, but
+    must never load ViGEm or create a controller. Omitted mode stays gamepad.
+    Device creation failure never leaves input enabled on a provisional holder.
+    """
+    input_only = entry.get("mode", "gamepad") == "input"
     try:
-        entry["device"] = MockGamepad() if mock else ViGEmGamepad()
+        if not input_only and entry.get("device") is None:
+            entry["device"] = MockGamepad() if mock else ViGEmGamepad()
+        for slot, factory in (("mouse", MockMouse if mock else WinMouse),
+                              ("keyboard", MockKeyboard if mock else WinKeyboard)):
+            if entry.get(slot) is None:
+                try:
+                    entry[slot] = factory()
+                except Exception:
+                    if input_only:
+                        raise
+                    # Preserve legacy lazy retry for existing controller clients.
+                    print("[gamepad] %s pre-create failed (lazy path will retry)"
+                          % slot, flush=True)
     except Exception as e:
+        entry["held"] = False
+        _release_devices(entry)
         print("[gamepad] device create failed: %s" % e, flush=True)
-        _wsend_json(entry, {"t": "err", "msg": "gamepad unavailable: %s" % e})
+        _wsend_json(entry, {"t": "err", "msg": "input unavailable" if input_only
+                            else "gamepad unavailable: %s" % e})
         _wsend_op(entry, WS_OP_CLOSE)
+        try:
+            entry["conn"].shutdown(socket.SHUT_RDWR)
+        except (OSError, AttributeError):
+            pass
         return False
     entry["held"] = True
     entry["requested"] = False
     entry["input_err_count"] = 0
     entry["input_blocked"] = False
-    _wsend_json(entry, {"t": "hello", "dev": entry["device"].name,
-                        "text": "unicode"})
-    for slot, factory in (("mouse", MockMouse if mock else WinMouse),
-                          ("keyboard", MockKeyboard if mock else WinKeyboard)):
-        if entry.get(slot) is None:
-            try:
-                entry[slot] = factory()
-            except Exception as e:
-                print("[gamepad] %s pre-create failed (lazy path will retry):"
-                      " %s" % (slot, e), flush=True)
+    hello = {"t": "hello", "dev": "input" if input_only else entry["device"].name,
+             "text": "unicode"}
+    if input_only:
+        hello["mode"] = "input"
+    _wsend_json(entry, hello)
     print("[gamepad] control -> %s" % entry.get("name"), flush=True)
     return True
+
+
+def _session_mode(query):
+    """An immutable per-connection choice; reject ambiguous or unknown modes."""
+    values = parse_qs(query, keep_blank_values=True).get("mode", ["gamepad"])
+    if len(values) != 1 or values[0] not in ("gamepad", "input"):
+        raise ValueError("mode must be gamepad or input")
+    return values[0]
 
 
 # ---------------------------------------------------------------------------
@@ -5312,7 +5781,7 @@ PAIR_PIN_LOCK = threading.Lock()
 PAIR_PIN = None              # {pin, expires, attempts, started} or None
 
 
-def pair_pin_start():
+def pair_pin_start(show_identity=False):
     """Mint a fresh PIN + session (replacing any prior one) and return
     (pin, ttl, fresh). Debounced: within PAIR_PIN_START_DEBOUNCE of the last
     start the LIVE pin is returned unchanged, so a double-tap doesn't reroll the
@@ -5323,10 +5792,12 @@ def pair_pin_start():
         now = time.monotonic()
         s = PAIR_PIN
         if s and now <= s["expires"] and now - s["started"] < PAIR_PIN_START_DEBOUNCE:
+            if show_identity:
+                s["show_identity"] = True
             return s["pin"], int(s["expires"] - now), False
         pin = "%06d" % (int.from_bytes(os.urandom(3), "big") % 1000000)
         PAIR_PIN = {"pin": pin, "expires": now + PAIR_PIN_TTL,
-                    "attempts": 0, "started": now}
+                    "attempts": 0, "started": now, "show_identity": bool(show_identity)}
         return pin, PAIR_PIN_TTL, True
 
 
@@ -5411,7 +5882,7 @@ def build_pair_url(token, port):
     return url
 
 
-def render_pin_page(pin):
+def render_pin_page(pin, show_identity=False):
     """Full-screen dark page showing the pairing PIN, sized to be read from a
     couch. Served ONLY on loopback (the /pair gates), so the PIN is visible only
     to someone physically at this PC — that is the whole consent mechanism.
@@ -5419,6 +5890,12 @@ def render_pin_page(pin):
     Polls /api/pair/status and clears itself once the session ends (paired or
     expired) rather than leaving a stale number on screen. A fetch error leaves
     the page untouched: an agent restart must never paint an error here."""
+    identity = ""
+    fp = _tls_public().get("fp", "")
+    if show_identity and isinstance(fp, str) and re.fullmatch(r"[0-9a-fA-F]{64}", fp):
+        code = " ".join(fp[:32].upper()[i:i+4] for i in range(0, 32, 4))
+        identity = ('<div class="sub" id="identity">PC identity: <strong>' + code +
+                    '</strong><br>Confirm this matches Computer Connect before entering the PIN.</div>')
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -5431,9 +5908,11 @@ def render_pin_page(pin):
         "font-variant-numeric:tabular-nums;color:#34d399}"
         ".sub{margin-top:20px;color:#7d8da0;font-size:1rem}"
         ".done{font-size:2rem;color:#9fb0c0}"
-        "</style></head><body><div class=\"w\">"
-        "<h1>Enter this PIN on your phone</h1>"
+        "</style></head><body><div class=\"w\">" +
+        ("<h1>Enter this PIN in Computer Connect</h1>" if show_identity else
+         "<h1>Enter this PIN on your phone</h1>") +
         "<div class=\"pin\" id=\"pin\">" + pin + "</div>"
+        + identity +
         "<div class=\"sub\" id=\"sub\">Couchside &middot; pairing expires in 2 minutes</div>"
         "</div><script>(function(){var gone=false;setInterval(function(){"
         "fetch('/api/pair/status').then(function(r){return r.json()})"
@@ -6055,7 +6534,9 @@ class Handler(BaseHTTPRequestHandler):
                 # physical-presence proof: show the big PIN (loopback-only, so
                 # only someone at this PC sees it). Otherwise the usual token QR.
                 pin = pair_pin_active()
-                html = (render_pin_page(pin) if pin
+                with PAIR_PIN_LOCK:
+                    identity = bool(PAIR_PIN and PAIR_PIN.get("show_identity"))
+                html = (render_pin_page(pin, identity) if pin
                         else render_pair_page(self._current_token(), self.port))
                 self._send_html(200, html, started)
                 return
@@ -6135,7 +6616,14 @@ class Handler(BaseHTTPRequestHandler):
                 force = parse_qs(parsed.query).get(
                     "force", ["0"])[0] not in ("0", "", "false")
                 data = mock_update_check() if self.mock else update_check(force)
-                data = dict(data, apply_enabled=bool(ALLOW_APP_UPDATE))
+                blocker = _self_update_blocker() if ALLOW_APP_UPDATE and not self.mock else None
+                data = dict(data, apply_enabled=bool(ALLOW_APP_UPDATE and not blocker))
+                if blocker:
+                    data["apply_blocked"] = blocker
+                if ALLOW_APP_UPDATE and not self.mock:
+                    # Read-only: last apply attempt (idle/running/launched/
+                    # failed + error) so the app can show why it was refused.
+                    data["apply_state"] = update_apply_state()
                 self._send(200, data, started)
             elif path == "/api/tv":
                 info = tv_info()
@@ -6267,7 +6755,13 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 pair_body = self._read_body()
                 if path == "/api/pair/start":
-                    _pin, ttl, fresh = pair_pin_start()
+                    try:
+                        pairing_options = json.loads(pair_body.decode("utf-8")) if pair_body else {}
+                    except (ValueError, UnicodeDecodeError):
+                        pairing_options = {}
+                    show_identity = (isinstance(pairing_options, dict) and
+                                     pairing_options.get("client") == "computer-connect")
+                    _pin, ttl, fresh = pair_pin_start(show_identity=show_identity)
                     # Pop the box screen ONLY on a fresh mint: a repeat /start
                     # inside the debounce window returns the same PIN and must
                     # not throw another window at whoever is at the PC.
@@ -6275,6 +6769,8 @@ class Handler(BaseHTTPRequestHandler):
                         pair_show_on_box(self.port)
                     adv = _tls_public()
                     extra = ({'tls_port':adv['port'], 'tls_fp':adv['fp'], 'tls_spki':adv['spki']} if adv else {})
+                    if show_identity:
+                        extra['identity_shown'] = bool(adv)
                     self._send(200, dict({"ok": True, "ttl": ttl}, **extra), started)
                     return
                 # .get() OUTSIDE the try: a body that parses but is not an object
@@ -6406,15 +6902,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not ALLOW_APP_UPDATE:
                     self._send(403, {"ok": False,
                                      "error": "app-triggered updates disabled "
-                                     "(enable with `couchside allow-updates on` "
-                                     "on the box)"}, started)
+                                     "(the PC's owner can enable them by setting "
+                                     "\"allow_app_update\": true in "
+                                     "%ProgramData%\\Couchside\\config.json)"},
+                               started)
                     return
                 if self.mock:
                     self._send(200, {"ok": True, "started": True,
                                      "log": "(mock)"}, started)
                     return
-                result = update_apply()
-                self._send(200, dict(result, ok=True), started)
+                # Request body is ignored on purpose: no URL/args/version from
+                # the network. 409 = refused (unsigned/RC/Python build, or an
+                # update already running); progress via /api/update/check.
+                code, result = update_apply()
+                self._send(code, result, started)
                 return
 
             # POST /api/tv/volume: absolute volume {"level": 0-100, "target":
@@ -6736,6 +7237,13 @@ class Handler(BaseHTTPRequestHandler):
                        extra_headers={"Connection": "close"})
             return
 
+        try:
+            _session_mode(parsed.query)
+        except ValueError as e:
+            self._send(400, {"error": str(e)}, started,
+                       extra_headers={"Connection": "close"})
+            return
+
         key = self.headers.get("Sec-WebSocket-Key", "")
         upgrade = (self.headers.get("Upgrade") or "").lower()
         if upgrade != "websocket" or not key:
@@ -6772,7 +7280,8 @@ class Handler(BaseHTTPRequestHandler):
         # clients that send no param) = grab it, the pre-2.9.2 behavior.
         ask = q.get("handoff", ["takeover"])[0] == "ask"
         entry = {"conn": conn, "device": None, "mouse": None, "keyboard": None,
-                 "name": name, "held": False, "requested": False,
+                 "name": name, "mode": _session_mode(urlparse(self.path).query),
+                 "held": False, "requested": False,
                  "input_err_count": 0, "input_blocked": False,
                  "slock": threading.Lock()}
 
@@ -6791,12 +7300,12 @@ class Handler(BaseHTTPRequestHandler):
             else:  # takeover
                 holder["held"] = False
                 demoted = holder
+                _release_devices(demoted)
                 GAMEPAD_HOLDER = entry
                 entry["held"] = True
                 role = "hold"
 
         if demoted is not None:
-            _release_devices(demoted)
             _wsend_json(demoted, {"t": "released", "by": name})
         if role == "hold":
             if not _make_holder(entry, self.mock):
@@ -6856,6 +7365,10 @@ class Handler(BaseHTTPRequestHandler):
         global GAMEPAD_HOLDER
         promote = None
         with GAMEPAD_LOCK:
+            if entry not in GAMEPAD_SESSIONS:
+                return  # activation failure and recv-finally may both clean up
+            entry["held"] = False
+            _release_devices(entry)
             was_holder = GAMEPAD_HOLDER is entry
             if entry in GAMEPAD_SESSIONS:
                 GAMEPAD_SESSIONS.remove(entry)
@@ -6867,8 +7380,8 @@ class Handler(BaseHTTPRequestHandler):
                 if promote is not None:
                     GAMEPAD_HOLDER = promote
             # Grab refs while we hold the lock so a concurrent promote can't race.
-            devices = [entry.get("device"), entry.get("mouse"),
-                       entry.get("keyboard")]
+            devices = [entry.get("mouse"), entry.get("keyboard")]
+            entry["mouse"] = entry["keyboard"] = None
         for dev in devices:
             if dev is not None:
                 try:
@@ -6901,6 +7414,8 @@ class Handler(BaseHTTPRequestHandler):
         deny = None
         with GAMEPAD_LOCK:
             holder = GAMEPAD_HOLDER
+            if entry not in GAMEPAD_SESSIONS:
+                return False
             if t in ("grant", "deny") and entry is not holder:
                 return True  # only the holder may grant/deny
             if t == "grant":
@@ -6909,7 +7424,7 @@ class Handler(BaseHTTPRequestHandler):
                 if target is not None:
                     entry["held"] = False
                     demoted = entry
-                    target["held"] = True  # provisional; device made below
+                    target["held"] = False  # enabled only after devices are ready
                     GAMEPAD_HOLDER = target
                     promote = target
             elif t == "deny":
@@ -6925,15 +7440,21 @@ class Handler(BaseHTTPRequestHandler):
                 if holder is not None and entry is not holder:
                     holder["held"] = False
                     demoted = holder
-                    entry["held"] = True
+                    entry["held"] = False
                     GAMEPAD_HOLDER = entry
                     promote = entry
+            if demoted is not None:
+                _release_devices(demoted)
         if demoted is not None:
-            _release_devices(demoted)
             _wsend_json(demoted, {"t": "released",
                                   "by": (promote or {}).get("name")})
-        if promote is not None:
-            _make_holder(promote, self.mock)
+        if promote is not None and not _make_holder(promote, self.mock):
+            # Failed grant must not strand every remaining client as a waiter.
+            # Cleanup is idempotent with the failed peer's receive-finally.
+            with GAMEPAD_LOCK:
+                failed_holder = GAMEPAD_HOLDER is promote
+            if failed_holder:
+                self._gamepad_cleanup(promote)
         if notify_holder is not None:
             _wsend_json(notify_holder, {"t": "control_request",
                                         "name": entry.get("name")})
@@ -6962,11 +7483,20 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if t in self._CONTROL_TYPES:
             return self._handle_control(entry, t)
-        # Input frames only from the holder; a waiter's input is ignored.
-        if not entry.get("held"):
+        # Handoff waits for an in-flight emit before releasing devices. This
+        # prevents a late mouse-down from being sent after its release on demote.
+        with GAMEPAD_LOCK:
+            return self._gamepad_input(entry, msg)
+
+    def _gamepad_input(self, entry, msg):
+        # Existing helper callers omit mode. Input-only sessions additionally
+        # check identity, so stale flags cannot revive a disconnected client.
+        if not entry.get("held") or (entry.get("mode") == "input" and
+                                     GAMEPAD_HOLDER is not entry):
             return True
 
         # Select decoder, target device slot, and lazy device factory.
+        t = msg.get("t")
         if t in self._MOUSE_TYPES:
             decode, slot = mouse_events, "mouse"
             factory = MockMouse if self.mock else WinMouse
@@ -6974,6 +7504,10 @@ class Handler(BaseHTTPRequestHandler):
             decode, slot = keyboard_events, "keyboard"
             factory = MockKeyboard if self.mock else WinKeyboard
         else:
+            if entry.get("mode") == "input":
+                _wsend_json(entry, {"t": "err", "msg": "controller input not allowed in input mode"})
+                _wsend_op(entry, WS_OP_CLOSE)
+                return False
             decode, slot, factory = gamepad_events, "device", None
 
         try:
