@@ -6,3 +6,9 @@ build/
 *.spec
 ViGEmClient.dll
 .DS_Store
+
+.build-venv/
+*.pem
+*.key
+*.pfx
+.env

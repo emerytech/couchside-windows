@@ -73,3 +73,14 @@ jobs:
           name: CouchsideAgentPreview
           path: dist/couchside-agent.exe
           if-no-files-found: error
+
+      - name: Inventory final installer and dependency notices
+        shell: pwsh
+        run: .build-venv/Scripts/python.exe tools/collect_build_inventory.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SigningReviewInventory
+          path: |
+            dist/build-inventory.json
+            dist/licenses/
+          if-no-files-found: error

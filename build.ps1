@@ -17,7 +17,13 @@ param([switch]$NoGamepad, [switch]$Console)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-python -m pip install --upgrade pyinstaller 'cryptography==46.0.7' | Out-Null
+$venv = Join-Path $here '.build-venv'
+if (-not (Test-Path (Join-Path $venv 'Scripts/python.exe'))) {
+    python -m venv $venv
+    if ($LASTEXITCODE -ne 0) { throw 'Build venv creation failed' }
+}
+$python = Join-Path $venv 'Scripts/python.exe'
+& $python -m pip install --only-binary=:all: --require-hashes --force-reinstall -r (Join-Path $here 'build-requirements.lock') | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Build dependency installation failed' }
 
 # qr.py is the shared encoder in agent/; a standalone copy may sit next to
@@ -102,7 +108,7 @@ $ico = @(
 if ($ico) { $piArgs += @('--icon', $ico) } else { Write-Host 'No couchside.ico found - building with the default PyInstaller icon.' }
 $piArgs += (Join-Path $here 'couchsided-win.py')
 
-python -m PyInstaller @piArgs
+& $python -m PyInstaller @piArgs
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
 # Prove the DLL actually made it in, rather than trusting the flag. PyInstaller
@@ -136,3 +142,6 @@ if (-not $NoGamepad) {
 Write-Host ''
 Write-Host "Built: $exe"
 Write-Host 'Verify before shipping: start it, then GET /api/status and confirm caps.gamepad = true.'
+
+& $python (Join-Path $here 'tools/collect_build_inventory.py')
+if ($LASTEXITCODE -ne 0) { throw 'Dependency inventory failed' }
