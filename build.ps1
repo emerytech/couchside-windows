@@ -108,6 +108,10 @@ $ico = @(
 if ($ico) { $piArgs += @('--icon', $ico) } else { Write-Host 'No couchside.ico found - building with the default PyInstaller icon.' }
 $piArgs += (Join-Path $here 'couchsided-win.py')
 
+$versionFile = Join-Path $venv 'agent-version.txt'
+& $python (Join-Path $here 'tools/write_version_resource.py') $versionFile
+if ($LASTEXITCODE -ne 0) { throw 'Version resource generation failed' }
+$piArgs += @('--version-file', $versionFile)
 & $python -m PyInstaller @piArgs
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
