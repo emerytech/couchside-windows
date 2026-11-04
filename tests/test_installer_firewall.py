@@ -119,8 +119,8 @@ function Start-Process {
  def test_port_resolution_range_explicit_override_and_settings_retention(self):
   with tempfile.TemporaryDirectory() as tmp:
    path=Path(tmp)/'config.json'
-   original={'port':9010,'launchers':[{'id':'synthetic','args':['x','y']}],'appearance':{'accent':'blue'}}
-   path.write_text(json.dumps(original),encoding='utf-8')
+   original={'port':9010,'launchers':[{'id':'synthetic','args':['x','y']}],'appearance':{'accent':'blue','label':'Café 🎮'}}
+   path.write_text(json.dumps(original,ensure_ascii=False),encoding='utf-8')
    literal=str(path).replace("'","''")
    out=self.run_ps(PORT_HELPERS+"\n$path='"+literal+"'\n"+"""
 $before=(Get-FileHash $path).Hash
@@ -132,7 +132,7 @@ foreach($invalid in @(0,65535)) { try { [void](Resolve-InstallerPort $invalid $t
 Save-ExplicitInstallerPort -RequestedPort 9010 -Path $path
 $unchanged=(Get-FileHash $path).Hash -eq $before
 Save-ExplicitInstallerPort -RequestedPort 9123 -Path $path
-$after=Get-Content $path -Raw | ConvertFrom-Json
+$after=Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
 @{saved=$saved;explicit=$explicit;max=$max;rejected=$rejected;samePortUnchanged=$unchanged;after=$after} | ConvertTo-Json -Depth 20 -Compress
 """)
    result=json.loads(out.strip().splitlines()[-1]);self.assertEqual(result['saved'],9010);self.assertEqual(result['explicit'],9123)

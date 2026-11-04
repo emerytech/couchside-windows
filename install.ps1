@@ -89,7 +89,7 @@ function Resolve-InstallerPort {
     $effective = $RequestedPort
     if (-not $ExplicitPort -and (Test-Path $Path)) {
         $saved = $null
-        try { $saved = (Get-Content $Path -Raw | ConvertFrom-Json).port } catch { }
+        try { $saved = (Get-Content $Path -Raw -Encoding UTF8 | ConvertFrom-Json).port } catch { }
         if ($null -ne $saved) {
             if ($saved -isnot [int] -and $saved -isnot [long]) { throw 'Saved agent port must be an integer from 1 through 65534.' }
             $effective = $saved
@@ -103,7 +103,7 @@ function Save-ExplicitInstallerPort {
     param([int]$RequestedPort, [string]$Path)
     $effective = Resolve-InstallerPort -RequestedPort $RequestedPort -ExplicitPort $true -Path $Path
     # Read the latest config after stopping the agent; preserve every other field.
-    $saved = Get-Content $Path -Raw | ConvertFrom-Json
+    $saved = Get-Content $Path -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($saved.port -ne $effective) {
         $saved | Add-Member -MemberType NoteProperty -Name port -Value $effective -Force
         [IO.File]::WriteAllText($Path, ($saved | ConvertTo-Json -Depth 100) + "`n")
