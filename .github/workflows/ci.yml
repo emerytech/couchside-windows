@@ -38,3 +38,4 @@ jobs:
       - run: python tests/test_win_update_apply.py -q
       - run: python tests/test_win_input_only.py -q
       - run: python tests/test_review_regressions.py -q
+      - run: python tests/test_installer_firewall.py -q
