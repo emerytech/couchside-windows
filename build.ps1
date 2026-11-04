@@ -1,5 +1,5 @@
-# Build a self-contained couchside-agent.exe with PyInstaller, so end users
-# don't need Python installed. Run on a Windows machine with Python 3.9+:
+﻿# Build a self-contained couchside-agent.exe with PyInstaller, so end users
+# don't need Python installed. Run on a Windows machine with Python 3.12:
 #
 #   powershell -ExecutionPolicy Bypass -File build.ps1
 #
@@ -17,12 +17,23 @@ param([switch]$NoGamepad, [switch]$Console)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# The Windows dependency lock and release CI target Python 3.12 exactly.
+& python -c "import sys; sys.exit(0 if sys.version_info[:2] == (3,12) else 1)"
+if ($LASTEXITCODE -ne 0) { throw 'Build requires Python 3.12. Select Python 3.12 before retrying.' }
 $venv = Join-Path $here '.build-venv'
-if (-not (Test-Path (Join-Path $venv 'Scripts/python.exe'))) {
-    python -m venv $venv
+$python = Join-Path $venv 'Scripts/python.exe'
+if (Test-Path $python) {
+    & $python -c "import sys; sys.exit(0 if sys.version_info[:2] == (3,12) else 1)"
+    if ($LASTEXITCODE -ne 0) {
+        # Preserve the incompatible environment for recovery; never delete it.
+        $backup = $venv + '.unsupported-' + [guid]::NewGuid().ToString('N')
+        Move-Item -LiteralPath $venv -Destination $backup
+    }
+}
+if (-not (Test-Path $python)) {
+    & python -m venv $venv
     if ($LASTEXITCODE -ne 0) { throw 'Build venv creation failed' }
 }
-$python = Join-Path $venv 'Scripts/python.exe'
 & $python -m pip install --only-binary=:all: --require-hashes --force-reinstall -r (Join-Path $here 'build-requirements.lock') | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Build dependency installation failed' }
 

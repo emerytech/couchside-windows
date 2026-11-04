@@ -33,6 +33,8 @@ jobs:
           set -euo pipefail
           SHA=$(git ls-remote https://github.com/emerytech/couchside.git refs/heads/main | cut -f1)
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "Source commit: $SHA"
+          printf '%s\n' "$SHA" > proposed-agent-source-sha.txt
           BASE="https://raw.githubusercontent.com/emerytech/couchside/$SHA"
           # (dest in this repo) <- (path in the monorepo)
           curl -fsSL "$BASE/agent/win/couchsided-win.py"  -o couchsided-win.py
@@ -53,5 +55,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: proposed-agent-sync
-          path: proposed-agent-sync.patch
+          path: |
+            proposed-agent-sync.patch
+            proposed-agent-source-sha.txt
           retention-days: 14

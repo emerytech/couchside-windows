@@ -12,3 +12,5 @@ ViGEmClient.dll
 *.key
 *.pfx
 .env
+
+.build-venv.unsupported-*/

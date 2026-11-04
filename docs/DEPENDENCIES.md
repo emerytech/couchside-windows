@@ -1,8 +1,8 @@
 # Dependency and artifact review
 
 This is a source inventory, not a completed binary SBOM. Generate the exact
-installed-package/license inventory with `computer-connect/tools/collect_notices.py`
-in the isolated build environment. Keep `dist/dependencies.json`, `dist/licenses/`
+installed-package/license inventory with `tools/collect_build_inventory.py`
+in the isolated build environment. Keep `dist/build-inventory.json`, `dist/licenses/`
 and SHA-256 sums beside every reviewed portable candidate.
 
 | Component | Version/source | License | Treatment |

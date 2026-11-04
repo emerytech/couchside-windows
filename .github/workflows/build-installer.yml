@@ -12,6 +12,11 @@ on:
       - couchsided-win.py
       - qr.py
       - build.ps1
+      - build-requirements.txt
+      - build-requirements.lock
+      - tools/**
+      - third-party/**
+      - .github/actions/fetch-vigem/**
       - install.ps1
       - installer/**
       - .github/workflows/build-installer.yml
@@ -89,7 +94,7 @@ jobs:
 
       - name: Inventory final installer and dependency notices
         shell: pwsh
-        run: .build-venv/Scripts/python.exe tools/collect_build_inventory.py
+        run: .build-venv/Scripts/python.exe tools/collect_build_inventory.py --final-installer
       - uses: actions/upload-artifact@v4
         with:
           name: SigningReviewInventory

@@ -1,4 +1,4 @@
-# Couchside Windows agent installer.
+﻿# Couchside Windows agent installer.
 #
 # ONE-LINE INSTALL (run in PowerShell; it self-elevates via UAC):
 #
@@ -104,7 +104,8 @@ if (-not (Test-Admin)) {
     if ($Elevated)       { $fwd += '-Elevated' }
     if ($NoElevated)     { $fwd += '-NoElevated' }
     if ($FromInstaller)  { $fwd += '-FromInstaller' }
-    $fwd += "-Port $Port"; $fwd += "-Ref $Ref"
+    $fwd += "-Port $Port"
+    if ($PSBoundParameters.ContainsKey('Ref')) { $fwd += "-Ref $Ref" }
     # A human running this directly wants -NoExit so the elevated window stays up to
     # read. The Inno installer wants the opposite: no leftover window, AND the outer
     # (non-elevated) process must block on the elevated child so its Exec() sees real
@@ -283,6 +284,27 @@ function Install-WingetPackage {
     return $true
 }
 
+function Assert-ReleaseSignature {
+    param([string]$Python, [string]$Sums, [string]$Signature, [string[]]$Keys)
+    if (-not (Test-Path -LiteralPath $Signature)) { throw 'Release signature missing; existing agent retained.' }
+    $verifyScript = @'
+import sys
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+message = open(sys.argv[1], 'rb').read()
+signature = open(sys.argv[2], 'rb').read()
+for pem in sys.argv[3:]:
+    try:
+        load_pem_public_key(pem.encode('ascii')).verify(signature, message)
+        sys.exit(0)
+    except Exception:
+        pass
+sys.exit(1)
+'@
+    & $Python -c $verifyScript $Sums $Signature @Keys
+    if ($LASTEXITCODE -ne 0) { throw 'Release signature verification failed; existing agent retained.' }
+    Write-Host 'Release signature: verified (maintainer key).'
+}
+
 # --- 1. resolve the agent source: local checkout, else download --------------
 $here    = if ($PSCommandPath) { Split-Path -Parent $PSCommandPath } else { $null }
 $usePython = $true
@@ -302,7 +324,6 @@ function Find-Local {
     return $null
 }
 
-Stop-AgentTask
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
@@ -313,6 +334,7 @@ $localTray = Find-Local @('couchside-tray.pyw','agent\win\couchside-tray.pyw')
 $localDll = Find-Local @('ViGEmClient.dll','agent\win\ViGEmClient.dll')
 
 if ($localExe) {
+    Stop-AgentTask
     # Prebuilt exe: no Python needed.
     $usePython = $false
     Copy-Item $localExe (Join-Path $InstallDir 'couchside-agent.exe') -Force
@@ -339,6 +361,7 @@ else {
 
 
     if ($localPy) {
+        Stop-AgentTask
         Copy-Item $localPy (Join-Path $InstallDir 'couchsided-win.py') -Force
         if ($localQr) { Copy-Item $localQr (Join-Path $InstallDir 'qr.py') -Force }
         if ($localTray) { Copy-Item $localTray (Join-Path $InstallDir 'couchside-tray.pyw') -Force }
@@ -355,31 +378,11 @@ else {
             }
             Invoke-WebRequest -UseBasicParsing "$ReleaseBase/SHA256SUMS" -OutFile (Join-Path $tmp 'SHA256SUMS')
             $sigPath = Join-Path $tmp 'SHA256SUMS.sig'
-            $haveSig = $true
-            try { Invoke-WebRequest -UseBasicParsing "$ReleaseBase/SHA256SUMS.sig" -OutFile $sigPath } catch { $haveSig = $false }
+            try { Invoke-WebRequest -UseBasicParsing "$ReleaseBase/SHA256SUMS.sig" -OutFile $sigPath } catch { throw 'Release signature download failed; existing agent retained.' }
 
-            # (1) AUTHENTICITY: verify the Ed25519 signature over SHA256SUMS when an
-            # openssl that supports it is on PATH. Present-but-invalid => abort. No
-            # openssl => fall back to checksum-only (integrity, not authenticity),
-            # mirroring install.sh's verify_release_sig contract.
-            $sigResult = 'unavailable'
-            $openssl = Get-Command openssl -ErrorAction SilentlyContinue
-            if ($haveSig -and $openssl) {
-                foreach ($pem in $ReleasePubKeys) {
-                    $pub = Join-Path $tmp 'relpub.pem'
-                    Set-Content -Path $pub -Value $pem -Encoding ascii
-                    & $openssl.Source pkeyutl -verify -pubin -inkey $pub -rawin -in (Join-Path $tmp 'SHA256SUMS') -sigfile $sigPath *> $null
-                    if ($LASTEXITCODE -eq 0) { $sigResult = 'ok'; break }
-                    $sigResult = 'bad'
-                }
-            }
-            if ($sigResult -eq 'bad') {
-                throw 'Release signature INVALID - refusing to install (possible tampering).'
-            } elseif ($sigResult -eq 'ok') {
-                Write-Host 'Release signature: verified (maintainer offline key).'
-            } else {
-                throw 'Cannot authenticate release: openssl or SHA256SUMS.sig is missing. Refusing checksum-only installation.'
-            }
+            # cryptography was provisioned above, before touching the old task.
+            # Authentication failure never stops/replaces the running agent.
+            Assert-ReleaseSignature -Python $consolePy -Sums (Join-Path $tmp 'SHA256SUMS') -Signature $sigPath -Keys $ReleasePubKeys
 
             # (2) INTEGRITY: every required file must match its SHA256SUMS entry.
             $sums = @{}
@@ -392,6 +395,10 @@ else {
                 if ($got -ne $sums[$a]) { throw "$a checksum mismatch - refusing to install (corrupt or tampered)." }
             }
 
+            & $consolePy -m py_compile (Join-Path $tmp 'couchsided-win.py') (Join-Path $tmp 'qr.py')
+            if ($LASTEXITCODE -ne 0) { throw 'Verified agent failed to compile; existing task retained.' }
+            # Authentication, required checksums and syntax passed. Stop only now.
+            Stop-AgentTask
             # Verified -> place the files.
             Copy-Item (Join-Path $tmp 'couchsided-win.py') (Join-Path $InstallDir 'couchsided-win.py') -Force
             Copy-Item (Join-Path $tmp 'qr.py')             (Join-Path $InstallDir 'qr.py') -Force
@@ -407,6 +414,7 @@ else {
     } else {
         # Dev override: -Ref <branch> fetches raw, UNVERIFIED source from that ref.
         Write-Warning "Fetching UNVERIFIED agent from raw '$Ref' (no signature or checksum). Omit -Ref for a signed release install."
+        Stop-AgentTask
         Write-Host "Downloading agent from $RawBase ..."
         Invoke-WebRequest -UseBasicParsing "$RawBase/win/couchsided-win.py" -OutFile (Join-Path $InstallDir 'couchsided-win.py')
         Invoke-WebRequest -UseBasicParsing "$RawBase/qr.py"                 -OutFile (Join-Path $InstallDir 'qr.py')

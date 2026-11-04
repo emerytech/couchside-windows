@@ -96,3 +96,5 @@ No production release is implied by this preview branch.
 ## Code signing policy
 
 Production signing is not activated. See [proposed policy](docs/CODE_SIGNING_POLICY.md) and [dependency review](docs/DEPENDENCIES.md). Signed updater attestations and packaging are under review; no Foundation approval is claimed.
+
+Windows source builds require Python **3.12**. Select it before running `build.ps1`; an incompatible existing `.build-venv` is preserved under a unique `.unsupported-*` backup before being recreated. Pre-compilation inventories exclude any existing installer; use `python tools/collect_build_inventory.py --final-installer` only after compiling the new installer for its external final digest.

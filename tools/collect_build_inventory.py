@@ -1,6 +1,10 @@
 """Inventory the actual build environment and artifacts. Never reads user config."""
+import argparse
 import hashlib,importlib.metadata as metadata,json,platform,sys
 from pathlib import Path
+parser=argparse.ArgumentParser()
+parser.add_argument('--final-installer',action='store_true',help='Include the newly compiled installer in the external inventory only')
+args=parser.parse_args()
 root=Path(__file__).resolve().parents[1]
 out=root/'dist';notices=out/'licenses';notices.mkdir(parents=True,exist_ok=True)
 packages=[]
@@ -26,7 +30,11 @@ def digest(path):
   for b in iter(lambda:f.read(65536),b''):h.update(b)
  return h.hexdigest()
 artifacts=[]
-for p in [root/'ViGEmClient.dll',out/'couchside-agent.exe',out/'CouchsideSetup.exe']:
+paths=[root/'ViGEmClient.dll',out/'couchside-agent.exe']
+if args.final_installer:
+ if not (out/'CouchsideSetup.exe').is_file():raise SystemExit('Final installer missing')
+ paths.append(out/'CouchsideSetup.exe')
+for p in paths:
  if p.is_file():artifacts.append({'name':p.name,'size':p.stat().st_size,'sha256':digest(p)})
 # Paths deliberately omitted: build environments can contain private user names.
 (out/'build-inventory.json').write_text(json.dumps({'python':platform.python_version(),'platform':sys.platform,'dependencies':sorted(packages,key=lambda x:x['name'].lower()),'artifacts':artifacts},indent=2),encoding='utf-8')
