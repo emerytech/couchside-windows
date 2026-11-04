@@ -73,7 +73,10 @@ function Invoke-WebRequest {
     harness.write_text(prefix+helper+'\n$failed=$false; $why=$null\ntry {\n'+runphase+'''\n} catch { $failed=$true; $why=$_.Exception.Message }
 @{why=$why; failed=$failed; stopped=$script:Stopped; retained=([IO.File]::ReadAllText((Join-Path $InstallDir 'couchsided-win.py')) -eq 'old-agent')} | ConvertTo-Json -Compress | Write-Output
 ''',encoding='utf-8-sig')
-    r=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(harness),str(root),sys.executable,base64.b64encode(pem.encode()).decode(),mode],capture_output=True,text=True,timeout=60)
+    # Hosted pwsh 7 exports its module search path; do not inject that into
+    # the Windows PowerShell 5.1 fixture (Get-FileHash is a 5.1 system cmdlet).
+    child_env={k:v for k,v in os.environ.items() if k.upper()!='PSMODULEPATH'}
+    r=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(harness),str(root),sys.executable,base64.b64encode(pem.encode()).decode(),mode],capture_output=True,text=True,timeout=60,env=child_env)
     self.assertEqual(r.returncode,0,r.stderr)
     result=json.loads(next(line for line in reversed(r.stdout.splitlines()) if line.startswith('{')))
     why=result.pop('why',None)
