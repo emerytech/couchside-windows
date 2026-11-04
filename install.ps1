@@ -85,8 +85,8 @@ $TrayName   = 'Couchside Tray'
 $StartupLnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Couchside Tray.lnk'
 if (Test-Path $ConfigPath) {
     try {
-    $existingPort = (Get-Content $ConfigPath -Raw | ConvertFrom-Json).port
-    if ($existingPort -is [int] -and $existingPort -ge 1 -and $existingPort -le 65534) { $Port = $existingPort }
+        $existingPort = (Get-Content $ConfigPath -Raw | ConvertFrom-Json).port
+        if ($existingPort -is [int] -and $existingPort -ge 1 -and $existingPort -le 65534) { $Port = $existingPort }
     } catch { } # preserve the installer's existing handling of malformed config
 }
 
@@ -162,12 +162,15 @@ function Invoke-InstallerWorker {
     # profile, network download, or external child process is used by this worker.
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $Code = '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);' + $Code
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Code))
     $info.Arguments = "-NoProfile -NonInteractive -EncodedCommand $encoded"
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $info.StandardErrorEncoding = [Text.Encoding]::UTF8
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $info
     try {

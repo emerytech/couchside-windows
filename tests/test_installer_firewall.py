@@ -9,9 +9,9 @@ HELPERS=SOURCE.split('# BEGIN firewall helpers')[1].split('# END firewall helper
 class FirewallTests(unittest.TestCase):
  def run_ps(self, code, timeout=30):
   with tempfile.TemporaryDirectory() as tmp:
-   path=Path(tmp)/'fixture.ps1';path.write_text("$ErrorActionPreference='Stop'\n"+code,encoding='utf-8-sig')
+   path=Path(tmp)/'fixture.ps1';path.write_text("$ErrorActionPreference='Stop'\n[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)\n"+code,encoding='utf-8-sig')
    env={k:v for k,v in os.environ.items() if k.upper()!='PSMODULEPATH'}
-   result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(path)],capture_output=True,text=True,timeout=timeout,env=env)
+   result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(path)],capture_output=True,text=True,encoding='utf-8',timeout=timeout,env=env)
    self.assertEqual(result.returncode,0,result.stdout+'\n'+result.stderr)
    return result.stdout
 
