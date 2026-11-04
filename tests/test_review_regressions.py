@@ -70,13 +70,14 @@ function Invoke-WebRequest {
 '''.replace('param($UseBasicParsing,$Uri,$OutFile)','param([switch]$UseBasicParsing,[string]$Uri,[string]$OutFile)')
     runphase=phase
     if mode=='dependency-failure':runphase=runphase.replace('$global:LASTEXITCODE = 0 # fixture dependency is already installed','$global:LASTEXITCODE = 1')
-    harness.write_text(prefix+helper+'\n$failed=$false\ntry {\n'+runphase+'''\n} catch { $failed=$true }
-@{failed=$failed; stopped=$script:Stopped; retained=([IO.File]::ReadAllText((Join-Path $InstallDir 'couchsided-win.py')) -eq 'old-agent')} | ConvertTo-Json -Compress | Write-Output
+    harness.write_text(prefix+helper+'\n$failed=$false; $why=$null\ntry {\n'+runphase+'''\n} catch { $failed=$true; $why=$_.Exception.Message }
+@{why=$why; failed=$failed; stopped=$script:Stopped; retained=([IO.File]::ReadAllText((Join-Path $InstallDir 'couchsided-win.py')) -eq 'old-agent')} | ConvertTo-Json -Compress | Write-Output
 ''',encoding='utf-8-sig')
     r=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(harness),str(root),sys.executable,base64.b64encode(pem.encode()).decode(),mode],capture_output=True,text=True,timeout=60)
     self.assertEqual(r.returncode,0,r.stderr)
     result=json.loads(next(line for line in reversed(r.stdout.splitlines()) if line.startswith('{')))
-    if mode=='valid':self.assertEqual(result,{'failed':False,'stopped':1,'retained':False})
+    why=result.pop('why',None)
+    if mode=='valid':self.assertEqual(result,{'failed':False,'stopped':1,'retained':False},str(why)+'\n'+r.stderr+'\n'+r.stdout)
     else:self.assertEqual(result,{'failed':True,'stopped':0,'retained':True})
 
 if __name__=='__main__':unittest.main()
