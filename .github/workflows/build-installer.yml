@@ -42,6 +42,8 @@ jobs:
           $v = if ($m) { $m.Matches[0].Groups[1].Value } else { "0.0.0" }
           Write-Host "agent version: $v"
           "version=$v" >> $env:GITHUB_OUTPUT
+          if ($v -notmatch '^(\d+)\.(\d+)\.(\d+)') { throw 'Invalid agent version' }
+          "numeric=$($Matches[1]).$($Matches[2]).$($Matches[3]).0" >> $env:GITHUB_OUTPUT
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress

@@ -18,6 +18,8 @@ for rel in ['LICENSE.txt','tcl/tcl8.6/license.terms','tcl/tk8.6/license.terms']:
  src=Path(sys.base_prefix)/rel
  if src.is_file():(notices/('Python-'+rel.replace('/','-'))).write_bytes(src.read_bytes())
 (notices/'Couchside-LICENSE.txt').write_bytes((root/'LICENSE').read_bytes())
+for source in (root/'third-party').glob('*LICENSE*'):
+ (notices/source.name).write_bytes(source.read_bytes())
 def digest(path):
  h=hashlib.sha256()
  with path.open('rb') as f:

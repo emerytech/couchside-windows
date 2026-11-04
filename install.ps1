@@ -272,11 +272,14 @@ function Get-Winget {
 }
 
 function Install-WingetPackage {
-    param([string]$Id, [string]$Label)
+    param([string]$Id, [string]$Label, [string]$Version = "")
     $wg = Get-Winget
     if (-not $wg) { return $false }
     Write-Host "Installing $Label via winget ($Id)..."
-    & $wg install --id $Id --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
+    $args = @('install','--id',$Id,'--exact','--silent','--accept-package-agreements','--accept-source-agreements','--disable-interactivity')
+    if ($Version) { $args += @('--version',$Version) }
+    & $wg @args 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { return $false }
     return $true
 }
 
@@ -420,7 +423,7 @@ icacls $DataDir /grant "$($env:USERNAME):(OI)(CI)M" | Out-Null
 # --- 2. virtual gamepad: ViGEmBus driver + client DLL (optional) --------------
 if (-not $NoGamepad) {
     if (-not (Get-Service -Name ViGEmBus -ErrorAction SilentlyContinue)) {
-        Install-WingetPackage 'ViGEm.ViGEmBus' 'ViGEmBus (virtual gamepad driver)' | Out-Null
+        Install-WingetPackage 'ViGEm.ViGEmBus' 'ViGEmBus (virtual gamepad driver)' '1.22.0' | Out-Null
     }
     $dllDest = Join-Path $InstallDir 'ViGEmClient.dll'
     if (-not (Test-Path $dllDest)) {
