@@ -25,6 +25,23 @@ try { Invoke-InstallerWorker -Code 'Start-Sleep -Seconds 60' -Label fixture -Tim
 ''')
   result=json.loads(out.strip().splitlines()[-1]);self.assertTrue(result['failed']);self.assertTrue(result['timed']);self.assertLess(result['seconds'],10)
 
+ def test_elevation_wait_returns_child_exit_without_waiting_for_descendants(self):
+  # Exercise the production wait block without UAC in a harmless CI fixture.
+  block=SOURCE[SOURCE.index('            $child = Start-Process powershell -Verb RunAs'):SOURCE.index('            exit $child.ExitCode')+len('            exit $child.ExitCode')]
+  block=block.replace('-Verb RunAs ','').replace('exit $child.ExitCode','Write-Output "CHILD_EXIT=$($child.ExitCode)"')
+  with tempfile.TemporaryDirectory() as tmp:
+   pid_file=Path(tmp)/'descendant.pid'
+   literal=str(pid_file).replace("'","''")
+   child="Start-Process powershell -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 30' -PassThru | ForEach-Object Id | Set-Content -LiteralPath '"+literal+"'; exit 7"
+   import base64,time
+   encoded=base64.b64encode(child.encode('utf-16-le')).decode()
+   start=time.monotonic()
+   try:
+    out=self.run_ps("$a=@('-NoProfile','-NonInteractive','-EncodedCommand','"+encoded+"')\n"+block,timeout=15)
+    self.assertIn('CHILD_EXIT=7',out);self.assertLess(time.monotonic()-start,12)
+   finally:
+    if pid_file.exists():subprocess.run(['taskkill','/PID',pid_file.read_text(encoding='utf-8-sig').strip(),'/T','/F'],capture_output=True,timeout=10)
+
  def test_failure_precedes_agent_stop(self):
   stop=SOURCE[SOURCE.index('function Stop-AgentTask {'):SOURCE.index('function Uninstall-Couchside {')]
   out=self.run_ps('''

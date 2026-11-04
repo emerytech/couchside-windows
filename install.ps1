@@ -145,7 +145,10 @@ if (-not (Test-Admin)) {
             # when it is non-zero. Before that it ran from a [Run] entry, which
             # never inspects exit codes -- a failed install still showed "Setup
             # completed successfully". So do not swallow a failure here.
-            $child = Start-Process powershell -Verb RunAs -ArgumentList $a -Wait -PassThru
+            # Start-Process -Wait includes every descendant, including the
+            # pairing browser. Wait on the actual installer process instead.
+            $child = Start-Process powershell -Verb RunAs -ArgumentList $a -PassThru
+            $child.WaitForExit()
             exit $child.ExitCode
         }
         Start-Process powershell -Verb RunAs -ArgumentList $a
