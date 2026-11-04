@@ -50,6 +50,7 @@ jobs:
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
             /DMyAppVersion=${{ steps.ver.outputs.version }} `
+            /DMyAppNumVersion=${{ steps.ver.outputs.numeric }} `
             installer\couchside.iss
 
       - name: Sanity — the installer exists

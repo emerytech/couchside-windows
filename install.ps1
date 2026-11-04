@@ -375,7 +375,7 @@ else {
             } elseif ($sigResult -eq 'ok') {
                 Write-Host 'Release signature: verified (maintainer offline key).'
             } else {
-                Write-Warning 'Cannot verify the release signature (openssl not found or no .sig); using checksum-only integrity. Install openssl for full authenticity verification.'
+                throw 'Cannot authenticate release: openssl or SHA256SUMS.sig is missing. Refusing checksum-only installation.'
             }
 
             # (2) INTEGRITY: every required file must match its SHA256SUMS entry.
@@ -443,16 +443,18 @@ if (-not $NoGamepad) {
         try {
             $tmp = Join-Path $env:TEMP 'couchside-vigem'
             New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-            $meta = Invoke-RestMethod -Uri 'https://pypi.org/pypi/vgamepad/json' -TimeoutSec 20
-            $sdist = ($meta.urls | Where-Object { $_.packagetype -eq 'sdist' } |
-                      Select-Object -First 1).url
+            $sdist = 'https://files.pythonhosted.org/packages/8a/54/0eaddc33f84247963af078f364b37153d09fcd6cdc398f243ec3e8842c56/vgamepad-0.1.0.tar.gz'
             if ($sdist) {
                 $tgz = Join-Path $tmp 'vgamepad.tar.gz'
                 Invoke-WebRequest -Uri $sdist -OutFile $tgz -TimeoutSec 60 -UseBasicParsing
+                if ((Get-FileHash -Algorithm SHA256 $tgz).Hash -ne '57F6BD01AEC0C172947517FB782D150EF9B285F7F4D524C317374FA5C24A89DE') { throw 'vgamepad source checksum mismatch' }
                 & tar.exe -xzf $tgz -C $tmp 2>$null
                 $hit = Get-ChildItem $tmp -Recurse -Filter 'ViGEmClient.dll' -ErrorAction SilentlyContinue |
                        Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
-                if ($hit) { Copy-Item $hit.FullName $dllDest -Force }
+                if ($hit) {
+                    if ((Get-FileHash -Algorithm SHA256 $hit.FullName).Hash -ne '2BF0CB1D809039573C922737D298A1653D4DBC61408060FF45A9BCFDE82E97D2') { throw 'ViGEmClient checksum mismatch' }
+                    Copy-Item $hit.FullName $dllDest -Force
+                }
             }
             Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
         } catch { }
