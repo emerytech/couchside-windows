@@ -61,6 +61,16 @@ jobs:
           if (-not (Test-Path dist\CouchsideSetup.exe)) { throw "CouchsideSetup.exe was not produced" }
           Get-Item dist\CouchsideSetup.exe | Format-List Name, Length
 
+      - name: Verify project version resources
+        shell: pwsh
+        run: |
+          foreach ($file in @('dist/couchside-agent.exe','dist/CouchsideSetup.exe')) {
+            $info = (Get-Item $file).VersionInfo
+            if ($info.ProductName -ne 'Couchside' -or $info.ProductVersion -ne '${{ steps.ver.outputs.numeric }}') {
+              throw "Project metadata mismatch in $file"
+            }
+          }
+
       - name: Upload CouchsideSetup.exe
         uses: actions/upload-artifact@v4
         with:
