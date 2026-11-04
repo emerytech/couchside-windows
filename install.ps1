@@ -83,12 +83,36 @@ $ConfigPath = Join-Path $DataDir 'config.json'
 $FwRule     = 'Couchside Agent'
 $TrayName   = 'Couchside Tray'
 $StartupLnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Couchside Tray.lnk'
-if (Test-Path $ConfigPath) {
-    try {
-        $existingPort = (Get-Content $ConfigPath -Raw | ConvertFrom-Json).port
-        if ($existingPort -is [int] -and $existingPort -ge 1 -and $existingPort -le 65534) { $Port = $existingPort }
-    } catch { } # preserve the installer's existing handling of malformed config
+# BEGIN installer port helpers
+function Resolve-InstallerPort {
+    param([int]$RequestedPort, [bool]$ExplicitPort, [string]$Path)
+    $effective = $RequestedPort
+    if (-not $ExplicitPort -and (Test-Path $Path)) {
+        $saved = $null
+        try { $saved = (Get-Content $Path -Raw | ConvertFrom-Json).port } catch { }
+        if ($null -ne $saved) {
+            if ($saved -isnot [int] -and $saved -isnot [long]) { throw 'Saved agent port must be an integer from 1 through 65534.' }
+            $effective = $saved
+        }
+    }
+    if ($effective -lt 1 -or $effective -gt 65534) { throw 'Agent port must be from 1 through 65534 (HTTP plus HTTPS).' }
+    return [int]$effective
 }
+
+function Save-ExplicitInstallerPort {
+    param([int]$RequestedPort, [string]$Path)
+    $effective = Resolve-InstallerPort -RequestedPort $RequestedPort -ExplicitPort $true -Path $Path
+    # Read the latest config after stopping the agent; preserve every other field.
+    $saved = Get-Content $Path -Raw | ConvertFrom-Json
+    if ($saved.port -ne $effective) {
+        $saved | Add-Member -MemberType NoteProperty -Name port -Value $effective -Force
+        [IO.File]::WriteAllText($Path, ($saved | ConvertTo-Json -Depth 100) + "`n")
+        Write-Host "Updated configured port to $effective. Other settings retained."
+    }
+}
+# END installer port helpers
+$PortWasSpecified = $PSBoundParameters.ContainsKey('Port')
+if (-not $Uninstall) { $Port = Resolve-InstallerPort -RequestedPort $Port -ExplicitPort $PortWasSpecified -Path $ConfigPath }
 
 function Test-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -110,7 +134,7 @@ if (-not (Test-Admin)) {
     if ($Elevated)       { $fwd += '-Elevated' }
     if ($NoElevated)     { $fwd += '-NoElevated' }
     if ($FromInstaller)  { $fwd += '-FromInstaller' }
-    $fwd += "-Port $Port"
+    if ($PortWasSpecified) { $fwd += "-Port $Port" }
     if ($PSBoundParameters.ContainsKey('Ref')) { $fwd += "-Ref $Ref" }
     # A human running this directly wants -NoExit so the elevated window stays up to
     # read. The Inno installer wants the opposite: no leftover window, AND the outer
@@ -148,12 +172,16 @@ if (-not (Test-Admin)) {
             # Start-Process -Wait includes every descendant, including the
             # pairing browser. Wait on the actual installer process instead.
             $child = Start-Process powershell -Verb RunAs -ArgumentList $a -PassThru
+            $null = $child.Handle # retain a handle even if the elevated child exits immediately
             $child.WaitForExit()
-            exit $child.ExitCode
+            $childExit = $child.ExitCode
+            if ($null -eq $childExit) { throw 'Elevated installer did not provide an exit code; refusing to report success.' }
+            exit $childExit
+            # END elevated installer wait
         }
         Start-Process powershell -Verb RunAs -ArgumentList $a
     }
-    catch { throw 'Elevation was declined. Re-run from an elevated PowerShell (Run as administrator).' }
+    catch { throw "Could not complete elevated installation: $_ Re-run from an elevated PowerShell if necessary." }
     return
 }
 
@@ -196,7 +224,7 @@ function Invoke-InstallerWorker {
 
 function Set-CouchsideFirewall {
     param([switch]$RemoveOnly)
-    if ($NoFirewall) { return }
+    if ($NoFirewall -and -not $RemoveOnly) { return }
     $agentProgram = if ($usePython) { $pyPath } else { Join-Path $InstallDir 'couchside-agent.exe' }
     # Base64 JSON transports values as data, never interpolated PowerShell code.
     $data = @{port=$Port; program=$agentProgram; removeOnly=[bool]$RemoveOnly} | ConvertTo-Json -Compress
@@ -206,17 +234,29 @@ $ErrorActionPreference = 'Stop'
 try {
     $settings = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__SETTINGS__')) | ConvertFrom-Json
     $Port = [int]$settings.port
-    if ($Port -lt 1 -or $Port -gt 65534) { throw 'Agent port must be between 1 and 65534 for HTTP + HTTPS.' }
+    if (-not $settings.removeOnly -and ($Port -lt 1 -or $Port -gt 65534)) { throw 'Agent port must be between 1 and 65534 for HTTP + HTTPS.' }
     $policy = New-Object -ComObject HNetCfg.FwPolicy2
     # The NetSecurity CIM bulk-delete path can stall on legacy duplicate rules.
     # Use Windows' Firewall COM collection instead, matching only our exact names.
     foreach ($name in @('Couchside Agent','Couchside Agent HTTPS','Couchside Agent Discovery')) {
-        while (@($policy.Rules | Where-Object { $_.Name -eq $name }).Count -gt 0) {
-            $policy.Rules.Remove($name)
+        $remaining = @($policy.Rules | Where-Object { $_.Name -eq $name }).Count
+        $maxAttempts = $remaining
+        $attempts = 0
+        while ($remaining -gt 0) {
+            if ($attempts -ge $maxAttempts) { throw "Removal limit reached for firewall rule '$name'. Check Group Policy or concurrent policy changes." }
+            $attempts++
+            try { $policy.Rules.Remove($name) }
+            catch { throw "Cannot remove firewall rule '$name'. Check permissions or Group Policy: $_" }
+            $after = @($policy.Rules | Where-Object { $_.Name -eq $name }).Count
+            if ($after -ge $remaining) { throw "Firewall rule '$name' is still present after removal. Check permissions or Group Policy." }
+            $remaining = $after
         }
     }
     if (-not $settings.removeOnly) {
-        $active = @(Get-NetConnectionProfile -ErrorAction Stop | Select-Object -ExpandProperty NetworkCategory)
+        # Offline machines can throw instead of returning an empty collection.
+        # Only this discovery call falls back; rule-creation errors stay fatal.
+        try { $active = @(Get-NetConnectionProfile -ErrorAction Stop | Select-Object -ExpandProperty NetworkCategory) }
+        catch { $active = @() }
         $fwProfiles = @('Private')
         if ($active -contains 'Public') { $fwProfiles += 'Public' }
         if ($active -contains 'DomainAuthenticated') { $fwProfiles += 'Domain' }
@@ -278,7 +318,8 @@ function Uninstall-Couchside {
     Write-Host 'Uninstalling Couchside agent...'
     Stop-AgentTask
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-    Set-CouchsideFirewall -RemoveOnly
+    try { Set-CouchsideFirewall -RemoveOnly }
+    catch { Write-Warning "Could not remove Couchside firewall rules: $_ Agent cleanup will continue; these rules may need manual removal." -WarningAction Continue }
     # Tray widget: kill the running icon + remove its Startup shortcut.
     Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like '*couchside-tray.pyw*' } |
@@ -648,10 +689,7 @@ if (-not (Test-Path $ConfigPath)) {
     Write-Host "Created config: $ConfigPath"
 } else {
     Write-Host "Kept existing config: $ConfigPath"
-    try {
-        $cfgPort = (Get-Content $ConfigPath -Raw | ConvertFrom-Json).port
-        if ($cfgPort -is [int] -and $cfgPort -ge 1 -and $cfgPort -le 65535) { $Port = $cfgPort }
-    } catch { }
+    if ($PortWasSpecified) { Save-ExplicitInstallerPort -RequestedPort $Port -Path $ConfigPath }
 }
 
 # --- 5. hibernate off so SetSuspendState means SLEEP, not hibernate ----------
