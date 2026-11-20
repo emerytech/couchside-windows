@@ -15,6 +15,10 @@
   #define MyAppVersion "0.0.0-dev"
 #endif
 
+#ifndef MyAppNumVersion
+  #define MyAppNumVersion "0.0.0.0"
+#endif
+
 ; Brand icon, mirrored to the repo root by sync.yml from the monorepo's
 ; brand/couchside.ico. Optional at compile time: a checkout without it still
 ; builds (with Inno's default icon), exactly like build.ps1 treats it, so a
@@ -27,6 +31,12 @@ AppId={{A9E2C6B1-6C3E-4E7B-9F1A-COUCHSIDEWIN}}
 AppName=Couchside
 AppVersion={#MyAppVersion}
 AppPublisher=ETS3D LLC
+VersionInfoVersion={#MyAppNumVersion}
+VersionInfoProductName=Couchside
+VersionInfoProductVersion={#MyAppNumVersion}
+VersionInfoProductTextVersion={#MyAppNumVersion}
+VersionInfoDescription=Couchside Windows agent setup
+VersionInfoCompany=ETS3D LLC
 AppPublisherURL=https://couchside.tv
 DefaultDirName={localappdata}\Couchside\bootstrap
 DisableProgramGroupPage=yes
@@ -61,6 +71,8 @@ UninstallDisplayIcon={localappdata}\Couchside\agent\couchside-agent.exe
 SetupLogging=yes
 
 [Files]
+Source: "..\dist\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\build-inventory.json"; DestDir: "{app}"; Flags: ignoreversion
 ; The real install runs from PrepareToInstall (see [Code]) — the only hook that
 ; can actually abort Setup — which is BEFORE {app} is populated. So stage the
 ; agent payload into {tmp} with dontcopy + ExtractTemporaryFile instead: they

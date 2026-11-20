@@ -36,16 +36,20 @@ runs:
       run: |
         $tmp = Join-Path $env:RUNNER_TEMP 'vigem'
         New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-        $meta = Invoke-RestMethod -Uri 'https://pypi.org/pypi/vgamepad/json' -TimeoutSec 20
-        $sdist = ($meta.urls | Where-Object { $_.packagetype -eq 'sdist' } | Select-Object -First 1).url
-        if (-not $sdist) { throw 'no vgamepad sdist on PyPI' }
+        # Pinned: vgamepad 0.1.0 sdist and its x64 ViGEmClient.dll (hashes
+        # verified 2026-10-29; 0.2.0 ships a byte-identical DLL).
+        $sdist   = 'https://files.pythonhosted.org/packages/8a/54/0eaddc33f84247963af078f364b37153d09fcd6cdc398f243ec3e8842c56/vgamepad-0.1.0.tar.gz'
+        $sdistSha = '57F6BD01AEC0C172947517FB782D150EF9B285F7F4D524C317374FA5C24A89DE'
+        $dllSha   = '2BF0CB1D809039573C922737D298A1653D4DBC61408060FF45A9BCFDE82E97D2'
         $tgz = Join-Path $tmp 'vgamepad.tar.gz'
         Invoke-WebRequest -Uri $sdist -OutFile $tgz -TimeoutSec 60 -UseBasicParsing
+        if ((Get-FileHash -Algorithm SHA256 $tgz).Hash -ne $sdistSha) { throw 'vgamepad sdist SHA256 mismatch' }
         # tar.exe is bsdtar, present on Windows 10 1803+ and on windows-latest.
         & tar.exe -xzf $tgz -C $tmp
         $hit = Get-ChildItem $tmp -Recurse -Filter 'ViGEmClient.dll' -ErrorAction SilentlyContinue |
                Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
         if (-not $hit) { throw 'ViGEmClient.dll (x64) not found in the vgamepad sdist' }
+        if ((Get-FileHash -Algorithm SHA256 $hit.FullName).Hash -ne $dllSha) { throw 'ViGEmClient.dll SHA256 mismatch' }
         # build.ps1 looks for the DLL next to itself, i.e. the repo root.
         Copy-Item $hit.FullName (Join-Path $env:GITHUB_WORKSPACE 'ViGEmClient.dll') -Force
         Get-Item (Join-Path $env:GITHUB_WORKSPACE 'ViGEmClient.dll') | Format-List Name, Length

@@ -1,5 +1,5 @@
-# Build a self-contained couchside-agent.exe with PyInstaller, so end users
-# don't need Python installed. Run on a Windows machine with Python 3.9+:
+﻿# Build a self-contained couchside-agent.exe with PyInstaller, so end users
+# don't need Python installed. Run on a Windows machine with Python 3.12:
 #
 #   powershell -ExecutionPolicy Bypass -File build.ps1
 #
@@ -17,7 +17,24 @@ param([switch]$NoGamepad, [switch]$Console)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-python -m pip install --upgrade pyinstaller 'cryptography==46.0.7' | Out-Null
+# The Windows dependency lock and release CI target Python 3.12 exactly.
+& python -c "import sys; sys.exit(0 if sys.version_info[:2] == (3,12) else 1)"
+if ($LASTEXITCODE -ne 0) { throw 'Build requires Python 3.12. Select Python 3.12 before retrying.' }
+$venv = Join-Path $here '.build-venv'
+$python = Join-Path $venv 'Scripts/python.exe'
+if (Test-Path $python) {
+    & $python -c "import sys; sys.exit(0 if sys.version_info[:2] == (3,12) else 1)"
+    if ($LASTEXITCODE -ne 0) {
+        # Preserve the incompatible environment for recovery; never delete it.
+        $backup = $venv + '.unsupported-' + [guid]::NewGuid().ToString('N')
+        Move-Item -LiteralPath $venv -Destination $backup
+    }
+}
+if (-not (Test-Path $python)) {
+    & python -m venv $venv
+    if ($LASTEXITCODE -ne 0) { throw 'Build venv creation failed' }
+}
+& $python -m pip install --only-binary=:all: --require-hashes --force-reinstall -r (Join-Path $here 'build-requirements.lock') | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Build dependency installation failed' }
 
 # qr.py is the shared encoder in agent/; a standalone copy may sit next to
@@ -102,7 +119,11 @@ $ico = @(
 if ($ico) { $piArgs += @('--icon', $ico) } else { Write-Host 'No couchside.ico found - building with the default PyInstaller icon.' }
 $piArgs += (Join-Path $here 'couchsided-win.py')
 
-python -m PyInstaller @piArgs
+$versionFile = Join-Path $venv 'agent-version.txt'
+& $python (Join-Path $here 'tools/write_version_resource.py') $versionFile
+if ($LASTEXITCODE -ne 0) { throw 'Version resource generation failed' }
+$piArgs += @('--version-file', $versionFile)
+& $python -m PyInstaller @piArgs
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
 # Prove the DLL actually made it in, rather than trusting the flag. PyInstaller
@@ -136,3 +157,6 @@ if (-not $NoGamepad) {
 Write-Host ''
 Write-Host "Built: $exe"
 Write-Host 'Verify before shipping: start it, then GET /api/status and confirm caps.gamepad = true.'
+
+& $python (Join-Path $here 'tools/collect_build_inventory.py')
+if ($LASTEXITCODE -ne 0) { throw 'Dependency inventory failed' }

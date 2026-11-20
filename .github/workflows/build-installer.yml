@@ -6,12 +6,20 @@ name: Build installer
 # will hand mainstream Windows users instead of `irm ... | iex`.
 
 on:
+  # Required checks must report for every PR, including tests/docs-only updates.
+  # A manual head-branch build cannot replace the PR merge check.
+  pull_request:
   workflow_dispatch:
   push:
     paths:
       - couchsided-win.py
       - qr.py
       - build.ps1
+      - build-requirements.txt
+      - build-requirements.lock
+      - tools/**
+      - third-party/**
+      - .github/actions/fetch-vigem/**
       - install.ps1
       - installer/**
       - .github/workflows/build-installer.yml
@@ -42,6 +50,8 @@ jobs:
           $v = if ($m) { $m.Matches[0].Groups[1].Value } else { "0.0.0" }
           Write-Host "agent version: $v"
           "version=$v" >> $env:GITHUB_OUTPUT
+          if ($v -notmatch '^(\d+)\.(\d+)\.(\d+)') { throw 'Invalid agent version' }
+          "numeric=$($Matches[1]).$($Matches[2]).$($Matches[3]).0" >> $env:GITHUB_OUTPUT
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
@@ -50,6 +60,7 @@ jobs:
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
             /DMyAppVersion=${{ steps.ver.outputs.version }} `
+            /DMyAppNumVersion=${{ steps.ver.outputs.numeric }} `
             installer\couchside.iss
 
       - name: Sanity — the installer exists
@@ -57,6 +68,16 @@ jobs:
         run: |
           if (-not (Test-Path dist\CouchsideSetup.exe)) { throw "CouchsideSetup.exe was not produced" }
           Get-Item dist\CouchsideSetup.exe | Format-List Name, Length
+
+      - name: Verify project version resources
+        shell: pwsh
+        run: |
+          foreach ($file in @('dist/couchside-agent.exe','dist/CouchsideSetup.exe')) {
+            $info = (Get-Item $file).VersionInfo
+            if (([string]$info.ProductName).Trim() -ne 'Couchside' -or ([string]$info.ProductVersion).Trim() -ne '${{ steps.ver.outputs.numeric }}') {
+              throw "Project metadata mismatch in $file"
+            }
+          }
 
       - name: Upload CouchsideSetup.exe
         uses: actions/upload-artifact@v4
@@ -72,4 +93,15 @@ jobs:
         with:
           name: CouchsideAgentPreview
           path: dist/couchside-agent.exe
+          if-no-files-found: error
+
+      - name: Inventory final installer and dependency notices
+        shell: pwsh
+        run: .build-venv/Scripts/python.exe tools/collect_build_inventory.py --final-installer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SigningReviewInventory
+          path: |
+            dist/build-inventory.json
+            dist/licenses/
           if-no-files-found: error

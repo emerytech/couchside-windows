@@ -1,4 +1,4 @@
-# Couchside Windows agent installer.
+﻿# Couchside Windows agent installer.
 #
 # ONE-LINE INSTALL (run in PowerShell; it self-elevates via UAC):
 #
@@ -104,7 +104,8 @@ if (-not (Test-Admin)) {
     if ($Elevated)       { $fwd += '-Elevated' }
     if ($NoElevated)     { $fwd += '-NoElevated' }
     if ($FromInstaller)  { $fwd += '-FromInstaller' }
-    $fwd += "-Port $Port"; $fwd += "-Ref $Ref"
+    $fwd += "-Port $Port"
+    if ($PSBoundParameters.ContainsKey('Ref')) { $fwd += "-Ref $Ref" }
     # A human running this directly wants -NoExit so the elevated window stays up to
     # read. The Inno installer wants the opposite: no leftover window, AND the outer
     # (non-elevated) process must block on the elevated child so its Exec() sees real
@@ -272,12 +273,36 @@ function Get-Winget {
 }
 
 function Install-WingetPackage {
-    param([string]$Id, [string]$Label)
+    param([string]$Id, [string]$Label, [string]$Version = "")
     $wg = Get-Winget
     if (-not $wg) { return $false }
     Write-Host "Installing $Label via winget ($Id)..."
-    & $wg install --id $Id --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
+    $args = @('install','--id',$Id,'--exact','--silent','--accept-package-agreements','--accept-source-agreements','--disable-interactivity')
+    if ($Version) { $args += @('--version',$Version) }
+    & $wg @args 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { return $false }
     return $true
+}
+
+function Assert-ReleaseSignature {
+    param([string]$Python, [string]$Sums, [string]$Signature, [string[]]$Keys)
+    if (-not (Test-Path -LiteralPath $Signature)) { throw 'Release signature missing; existing agent retained.' }
+    $verifyScript = @'
+import sys
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+message = open(sys.argv[1], 'rb').read()
+signature = open(sys.argv[2], 'rb').read()
+for pem in sys.argv[3:]:
+    try:
+        load_pem_public_key(pem.encode('ascii')).verify(signature, message)
+        sys.exit(0)
+    except Exception:
+        pass
+sys.exit(1)
+'@
+    & $Python -c $verifyScript $Sums $Signature @Keys
+    if ($LASTEXITCODE -ne 0) { throw 'Release signature verification failed; existing agent retained.' }
+    Write-Host 'Release signature: verified (maintainer key).'
 }
 
 # --- 1. resolve the agent source: local checkout, else download --------------
@@ -299,7 +324,6 @@ function Find-Local {
     return $null
 }
 
-Stop-AgentTask
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
@@ -310,6 +334,7 @@ $localTray = Find-Local @('couchside-tray.pyw','agent\win\couchside-tray.pyw')
 $localDll = Find-Local @('ViGEmClient.dll','agent\win\ViGEmClient.dll')
 
 if ($localExe) {
+    Stop-AgentTask
     # Prebuilt exe: no Python needed.
     $usePython = $false
     Copy-Item $localExe (Join-Path $InstallDir 'couchside-agent.exe') -Force
@@ -336,6 +361,7 @@ else {
 
 
     if ($localPy) {
+        Stop-AgentTask
         Copy-Item $localPy (Join-Path $InstallDir 'couchsided-win.py') -Force
         if ($localQr) { Copy-Item $localQr (Join-Path $InstallDir 'qr.py') -Force }
         if ($localTray) { Copy-Item $localTray (Join-Path $InstallDir 'couchside-tray.pyw') -Force }
@@ -352,31 +378,11 @@ else {
             }
             Invoke-WebRequest -UseBasicParsing "$ReleaseBase/SHA256SUMS" -OutFile (Join-Path $tmp 'SHA256SUMS')
             $sigPath = Join-Path $tmp 'SHA256SUMS.sig'
-            $haveSig = $true
-            try { Invoke-WebRequest -UseBasicParsing "$ReleaseBase/SHA256SUMS.sig" -OutFile $sigPath } catch { $haveSig = $false }
+            try { Invoke-WebRequest -UseBasicParsing "$ReleaseBase/SHA256SUMS.sig" -OutFile $sigPath } catch { throw 'Release signature download failed; existing agent retained.' }
 
-            # (1) AUTHENTICITY: verify the Ed25519 signature over SHA256SUMS when an
-            # openssl that supports it is on PATH. Present-but-invalid => abort. No
-            # openssl => fall back to checksum-only (integrity, not authenticity),
-            # mirroring install.sh's verify_release_sig contract.
-            $sigResult = 'unavailable'
-            $openssl = Get-Command openssl -ErrorAction SilentlyContinue
-            if ($haveSig -and $openssl) {
-                foreach ($pem in $ReleasePubKeys) {
-                    $pub = Join-Path $tmp 'relpub.pem'
-                    Set-Content -Path $pub -Value $pem -Encoding ascii
-                    & $openssl.Source pkeyutl -verify -pubin -inkey $pub -rawin -in (Join-Path $tmp 'SHA256SUMS') -sigfile $sigPath *> $null
-                    if ($LASTEXITCODE -eq 0) { $sigResult = 'ok'; break }
-                    $sigResult = 'bad'
-                }
-            }
-            if ($sigResult -eq 'bad') {
-                throw 'Release signature INVALID - refusing to install (possible tampering).'
-            } elseif ($sigResult -eq 'ok') {
-                Write-Host 'Release signature: verified (maintainer offline key).'
-            } else {
-                Write-Warning 'Cannot verify the release signature (openssl not found or no .sig); using checksum-only integrity. Install openssl for full authenticity verification.'
-            }
+            # cryptography was provisioned above, before touching the old task.
+            # Authentication failure never stops/replaces the running agent.
+            Assert-ReleaseSignature -Python $consolePy -Sums (Join-Path $tmp 'SHA256SUMS') -Signature $sigPath -Keys $ReleasePubKeys
 
             # (2) INTEGRITY: every required file must match its SHA256SUMS entry.
             $sums = @{}
@@ -389,6 +395,10 @@ else {
                 if ($got -ne $sums[$a]) { throw "$a checksum mismatch - refusing to install (corrupt or tampered)." }
             }
 
+            & $consolePy -m py_compile (Join-Path $tmp 'couchsided-win.py') (Join-Path $tmp 'qr.py')
+            if ($LASTEXITCODE -ne 0) { throw 'Verified agent failed to compile; existing task retained.' }
+            # Authentication, required checksums and syntax passed. Stop only now.
+            Stop-AgentTask
             # Verified -> place the files.
             Copy-Item (Join-Path $tmp 'couchsided-win.py') (Join-Path $InstallDir 'couchsided-win.py') -Force
             Copy-Item (Join-Path $tmp 'qr.py')             (Join-Path $InstallDir 'qr.py') -Force
@@ -404,6 +414,7 @@ else {
     } else {
         # Dev override: -Ref <branch> fetches raw, UNVERIFIED source from that ref.
         Write-Warning "Fetching UNVERIFIED agent from raw '$Ref' (no signature or checksum). Omit -Ref for a signed release install."
+        Stop-AgentTask
         Write-Host "Downloading agent from $RawBase ..."
         Invoke-WebRequest -UseBasicParsing "$RawBase/win/couchsided-win.py" -OutFile (Join-Path $InstallDir 'couchsided-win.py')
         Invoke-WebRequest -UseBasicParsing "$RawBase/qr.py"                 -OutFile (Join-Path $InstallDir 'qr.py')
@@ -420,7 +431,7 @@ icacls $DataDir /grant "$($env:USERNAME):(OI)(CI)M" | Out-Null
 # --- 2. virtual gamepad: ViGEmBus driver + client DLL (optional) --------------
 if (-not $NoGamepad) {
     if (-not (Get-Service -Name ViGEmBus -ErrorAction SilentlyContinue)) {
-        Install-WingetPackage 'ViGEm.ViGEmBus' 'ViGEmBus (virtual gamepad driver)' | Out-Null
+        Install-WingetPackage 'ViGEm.ViGEmBus' 'ViGEmBus (virtual gamepad driver)' '1.22.0' | Out-Null
     }
     $dllDest = Join-Path $InstallDir 'ViGEmClient.dll'
     if (-not (Test-Path $dllDest)) {
@@ -443,16 +454,18 @@ if (-not $NoGamepad) {
         try {
             $tmp = Join-Path $env:TEMP 'couchside-vigem'
             New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-            $meta = Invoke-RestMethod -Uri 'https://pypi.org/pypi/vgamepad/json' -TimeoutSec 20
-            $sdist = ($meta.urls | Where-Object { $_.packagetype -eq 'sdist' } |
-                      Select-Object -First 1).url
+            $sdist = 'https://files.pythonhosted.org/packages/8a/54/0eaddc33f84247963af078f364b37153d09fcd6cdc398f243ec3e8842c56/vgamepad-0.1.0.tar.gz'
             if ($sdist) {
                 $tgz = Join-Path $tmp 'vgamepad.tar.gz'
                 Invoke-WebRequest -Uri $sdist -OutFile $tgz -TimeoutSec 60 -UseBasicParsing
+                if ((Get-FileHash -Algorithm SHA256 $tgz).Hash -ne '57F6BD01AEC0C172947517FB782D150EF9B285F7F4D524C317374FA5C24A89DE') { throw 'vgamepad source checksum mismatch' }
                 & tar.exe -xzf $tgz -C $tmp 2>$null
                 $hit = Get-ChildItem $tmp -Recurse -Filter 'ViGEmClient.dll' -ErrorAction SilentlyContinue |
                        Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
-                if ($hit) { Copy-Item $hit.FullName $dllDest -Force }
+                if ($hit) {
+                    if ((Get-FileHash -Algorithm SHA256 $hit.FullName).Hash -ne '2BF0CB1D809039573C922737D298A1653D4DBC61408060FF45A9BCFDE82E97D2') { throw 'ViGEmClient checksum mismatch' }
+                    Copy-Item $hit.FullName $dllDest -Force
+                }
             }
             Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
         } catch { }
